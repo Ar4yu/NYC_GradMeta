@@ -1,4 +1,4 @@
-# NYC GradMeta – Age-Structured COVID Forecasting (NYC)
+# NYC GradMeta – Age-Structured COVID Forecasting (NYC, 2020–2022)
 
 ## Overview
 
@@ -15,6 +15,73 @@ This repository implements a clean, reproducible pipeline for:
 
 The goal is to test whether adding OpenTable improves forecasting performance.
 
+This repository implements a reproducible pipeline for NYC-level COVID forecasting using:
+
+- NYC DOHMH daily counts (cases, deaths, hospitalizations, probable cases)
+- Google Mobility (NYC counties aggregated to daily NYC mean)
+- Google Trends (daily; downloaded programmatically via pytrends)
+- OpenTable YoY seated diners (private signal; processed separately)
+
+Goal: test whether adding OpenTable improves forecasting performance while keeping the core pipeline identical to the Bogota GradABM workflow.
+
 ---
 
-## Project Structure
+## Data
+
+### Folder structure
+
+- `data/raw/` — downloaded raw inputs
+- `data/processed/` — generated outputs (this repo tracks processed CSVs)
+
+### Required raw files (place in `data/raw/`)
+
+#### 1) NYC DOHMH daily COVID counts
+
+Source: NYC Open Data — “COVID-19 Daily Counts of Cases, Hospitalizations, and Deaths” (CSV export)  
+Save as (exact filename expected by scripts):
+
+- `COVID-19_Daily_Counts_of_Cases,_Hospitalizations,_and_Deaths_20260213.csv`
+
+(If you download a newer export, either rename it to match the expected filename or update the script.)
+
+#### 2) Google Mobility zip
+
+Source: Google COVID-19 Community Mobility Reports  
+Save as:
+
+- `Region_Mobility_Report_CSVs.zip`
+
+This zip should contain (at least):
+
+- `2020_US_Region_Mobility_Report.csv`
+- `2021_US_Region_Mobility_Report.csv`
+- `2022_US_Region_Mobility_Report.csv`
+
+#### 3) Google Trends
+
+No raw file required. Download happens via `pytrends` and writes directly to `data/processed/`.
+
+#### 4) OpenTable YoY seated diners (processed separately)
+
+Source: Kaggle OpenTable dataset  
+Save as:
+
+- `YoY_Seated_Diner_Data.csv`
+
+### Data sources (links)
+
+- Google Trends UI (reference only; do not export CSV manually): https://trends.google.com
+- Google Mobility: https://www.google.com/covid19/mobility/
+- OpenTable Kaggle dataset: https://www.kaggle.com/datasets/pizacd/opentable-reservation-data
+
+---
+
+## Build the processed datasets
+
+From repo root:
+
+### One-command build
+
+```bash
+./script/build_data.sh
+```
