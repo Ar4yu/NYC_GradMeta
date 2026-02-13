@@ -1,0 +1,25 @@
+project:
+  name: nyc-gradmeta
+  seed: 0
+
+time:
+  start_date: "2020-01-01"
+  end_date: "2022-01-01"
+  freq: "W"            # weekly aggregation
+
+forecast:
+  weeks_ahead: 4
+
+patches:
+  type: "age"
+  n_age_bins: 16
+  contact_matrix_path: "data/raw/contact_matrix/contact_matrix_us.csv"
+
+paths:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  results_dir: "results/runs"
+
+features:
+  public: ["cases", "deaths", "mobility", "trends"]
+  private: ["opentable"]

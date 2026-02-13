@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: nyc-gradmeta
+Version: 0.0.1
+Summary: NYC GradMeta pipeline (age-structured SEIRM + private signals)
+Requires-Python: >=3.10
