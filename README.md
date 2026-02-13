@@ -68,11 +68,18 @@ Save as:
 
 - `YoY_Seated_Diner_Data.csv`
 
+### 5) Patchflow contact matrix and population
+
+We model NYC using 16 age patches consistent with Prem et al. (2019) contact matrix groupings (0–4, 5–9, ..., 70–74, 75+). NYC age-stratified population counts are taken from the New York State Department of Health Vital Statistics 2020, Table 01 (New York City Population by Age): https://health.ny.gov/statistics/vital_statistics/2020/table01.htm
+. The original age breakdowns were aggregated into the 16 SEIRM age bins (combining <1–4 into 0–4, 15–17 and 18–19 into 15–19, and 75–79, 80–84, and 85+ into 75+). The resulting processed file (data/processed/population_nyc_age16_2020.csv) contains the fixed population vector (total = 8,253,213) used as the age-stratified num_agents input to the SEIRM simulator.
+
 ### Data sources (links)
 
 - Google Trends UI (reference only; do not export CSV manually): https://trends.google.com
 - Google Mobility: https://www.google.com/covid19/mobility/
 - OpenTable Kaggle dataset: https://www.kaggle.com/datasets/pizacd/opentable-reservation-data
+- https://health.ny.gov/statistics/vital_statistics/2020/table01.htm
+- https://github.com/NSSAC/patchflow-data/blob/main/data/v1.0_age_stratified/USA/USA_admin1_population_agestrat.patchsim
 
 ---
 
@@ -83,5 +90,5 @@ From repo root:
 ### One-command build
 
 ```bash
-./script/build_data.sh
+./scripts/build_data.sh
 ```
