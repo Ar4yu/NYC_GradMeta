@@ -1,13 +1,20 @@
 """
-NYC GradMeta: core simulator + sequence embedding modules.
+NYC GradMeta: core simulator + sequence embedding modules + calibration network.
 
-This file is intentionally *NYC-focused*:
-- Keeps metapopulation SEIRM(-Beta) simulator
-- Keeps embedding/decoder modules used by forecasting model
-- DOES NOT include old county/flu fetchers or dataset loaders
+This file is intentionally NYC-focused:
+- Metapopulation SEIRM(-Beta) simulators
+- Attention-based sequence encoders/decoder
+- CalibNNTwoEncoderThreeOutputs (private encoder + public encoder -> epi params, seed, beta matrix)
+- Moving average utility
+
+It avoids legacy county/flu fetchers and dataset loaders.
 """
 
+from __future__ import annotations
+
 import math
+from typing import Optional, Tuple
+
 import numpy as np
 import pandas as pd
 import torch
@@ -16,22 +23,32 @@ import torch.nn as nn
 SMOOTH_WINDOW = 7
 
 
+# =========================
+# 1) Mechanistic simulators
+# =========================
+
 class MetapopulationSEIRM:
     """
-    Metapopulation SEIRM with a single scalar beta and a learnable adjustment_matrix
-    that modifies migration/coupling at t=0 (legacy behavior).
+    Metapopulation SEIRM with a scalar beta and an "adjustment_matrix" that
+    modifies migration/coupling at t=0 (legacy behavior).
+
+    Returns (NEW_DEATHS_TODAY, NEW_INFECTIONS_TODAY) per patch.
     """
+
     def __init__(self, params, device, num_patches, migration_matrix, num_agents):
         self.device = device
-        self.num_patches = num_patches
-        self.state = torch.zeros((num_patches, 5), device=self.device)
+        self.num_patches = int(num_patches)
+        self.state = torch.zeros((self.num_patches, 5), device=self.device)
         self.params = params
         self.migration_matrix = migration_matrix.to(self.device)
         self.num_agents = num_agents.to(self.device)
 
     def init_compartments(self, seed_infection_status=None):
-        seed_infection_status = seed_infection_status or {}
+        if seed_infection_status is None:
+            seed_infection_status = {}
         initial_infections = torch.zeros((self.num_patches), device=self.device)
+
+        # NOTE: original professor code enumerated over the container; keep same semantics:
         for idx, value in enumerate(seed_infection_status):
             initial_infections[idx] = value
 
@@ -57,9 +74,6 @@ class MetapopulationSEIRM:
         if t == 0:
             self.init_compartments(seed_infection_status=params["seed_status"])
 
-            # Legacy preprocessing from original codebase:
-            # - COVID uses diag(adjustment_matrix) with clipping + row-normalization
-            # - else uses additive clip
             disease = str(self.params.get("disease", "COVID"))
             if "COVID" in disease:
                 self.migration_matrix = torch.clip(
@@ -101,20 +115,24 @@ class MetapopulationSEIRM:
 
 class MetapopulationSEIRMBeta:
     """
-    Metapopulation SEIRM where 'adjustment_matrix' is actually a beta_matrix.
-    Original code uses beta_matrix.mean(dim=0) to get a per-patch beta.
+    Metapopulation SEIRM where the "adjustment_matrix" passed to step() is a beta_matrix.
+    Original behavior: beta_matrix.mean(dim=0) produces a per-patch beta vector.
+
+    Returns (NEW_DEATHS_TODAY, NEW_INFECTIONS_TODAY) per patch.
     """
+
     def __init__(self, params, device, num_patches, migration_matrix, num_agents, seed_infection_status=None):
         self.device = device
-        self.num_patches = num_patches
-        self.state = torch.zeros((num_patches, 5), device=self.device)
+        self.num_patches = int(num_patches)
+        self.state = torch.zeros((self.num_patches, 5), device=self.device)
         self.params = params
         self.migration_matrix = migration_matrix.to(self.device)
         self.num_agents = num_agents.to(self.device)
-        self.seed_infection_status = seed_infection_status or {}
+        self.seed_infection_status = seed_infection_status if seed_infection_status is not None else {}
 
     def init_compartments(self, seed_infection_status=None):
-        seed_infection_status = seed_infection_status or {}
+        if seed_infection_status is None:
+            seed_infection_status = {}
         initial_infections = torch.zeros((self.num_patches), device=self.device)
         for idx, value in enumerate(seed_infection_status):
             initial_infections[idx] = value
@@ -166,7 +184,16 @@ class MetapopulationSEIRMBeta:
         return NEW_DEATHS_TODAY, NEW_INFECTIONS_TODAY
 
 
+# =========================
+# 2) Attention modules
+# =========================
+
 class TransformerAttn(nn.Module):
+    """
+    Transformer-like self-attention block used in the professor code.
+    Expects seq in shape [SeqLen, Batch, Hidden].
+    """
+
     def __init__(self, dim_in=40, value_dim=40, key_dim=40) -> None:
         super().__init__()
         self.value_layer = nn.Linear(dim_in, value_dim)
@@ -174,13 +201,13 @@ class TransformerAttn(nn.Module):
         self.key_layer = nn.Linear(dim_in, key_dim)
 
     def forward(self, seq):
-        seq_in = seq.transpose(0, 1)
+        seq_in = seq.transpose(0, 1)  # [B, T, H]
         value = self.value_layer(seq_in)
         query = self.query_layer(seq_in)
         keys = self.key_layer(seq_in)
         weights = (value @ query.transpose(1, 2)) / math.sqrt(seq.shape[-1])
         weights = torch.softmax(weights, -1)
-        return (weights @ keys).transpose(1, 0)
+        return (weights @ keys).transpose(1, 0)  # [T, B, H]
 
     def forward_mask(self, seq, mask):
         seq_in = seq.transpose(0, 1)
@@ -195,6 +222,10 @@ class TransformerAttn(nn.Module):
 
 
 class EmbedAttenSeq(nn.Module):
+    """
+    Encoder: GRU + attention + MLP head that can incorporate metadata.
+    """
+
     def __init__(
         self,
         dim_seq_in: int = 5,
@@ -204,7 +235,7 @@ class EmbedAttenSeq(nn.Module):
         n_layers: int = 1,
         bidirectional: bool = False,
         attn=TransformerAttn,
-        dropout=0.0,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.dim_seq_in = dim_seq_in
@@ -221,6 +252,7 @@ class EmbedAttenSeq(nn.Module):
             dropout=dropout,
         )
         self.attn_layer = attn(self.rnn_out, self.rnn_out, self.rnn_out)
+
         self.out_layer = nn.Sequential(
             nn.Linear(self.rnn_out + self.dim_metadata, self.dim_out),
             nn.Tanh(),
@@ -231,6 +263,7 @@ class EmbedAttenSeq(nn.Module):
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
                 m.bias.data.fill_(0.01)
+
         self.out_layer.apply(init_weights)
 
     def forward_mask(self, seqs, metadata, mask):
@@ -246,21 +279,24 @@ class EmbedAttenSeq(nn.Module):
         if metadata is not None:
             out = self.out_layer(torch.cat([latent_seqs, metadata], dim=1))
         else:
-            # if no metadata, just return latent
             out = latent_seqs
         return out, encoder_hidden
 
 
 class DecodeSeq(nn.Module):
+    """
+    Decoder GRU that consumes a time grid (Hi_data) and a context embedding,
+    producing a latent sequence used by output heads.
+    """
+
     def __init__(
         self,
-        dim_seq_in: int = 5,
-        dim_metadata: int = 3,
+        dim_seq_in: int = 1,
         rnn_out: int = 40,
         dim_out: int = 5,
         n_layers: int = 1,
         bidirectional: bool = False,
-        dropout=0.0,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.dim_seq_in = dim_seq_in
@@ -288,12 +324,15 @@ class DecodeSeq(nn.Module):
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
                 m.bias.data.fill_(0.01)
+
         self.out_layer.apply(init_weights)
         self.embed_input.apply(init_weights)
         self.attn_combine.apply(init_weights)
 
     def forward(self, Hi_data, encoder_hidden, context):
-        inputs = Hi_data.transpose(1, 0)
+        inputs = Hi_data.transpose(1, 0)  # [T, B, 1]
+
+        # Mirror professor handling: use hidden states after index 2
         if self.bidirectional:
             h0 = encoder_hidden[2:]
         else:
@@ -310,6 +349,260 @@ class DecodeSeq(nn.Module):
         return latent_seqs
 
 
+# ==========================================
+# 3) NYC calibration network (Section 4)
+# ==========================================
+
+class CalibNNTwoEncoderThreeOutputs(nn.Module):
+    """
+    NYC version of professor's CalibNNTwoEncoderThreeOutputs.
+
+    Inputs:
+      x_private: [P, T, 1]   (e.g., OpenTable per-patch)
+      meta_private: [P, P]   (often identity)
+      x_public: [T, F] or [1, T, F] depending on caller
+      meta_public: [P, P] (kept consistent with your current wrapper; can be identity)
+      train_X: [N, n_in] or [N, n_in, 1] (passed-through; only used in legacy LSTM adapter)
+      train_Y: [N, 1]        (returned as the 4th output in professor code)
+
+    Outputs:
+      out:  [W, 7]    weekly epi params (kappa, symprob, epsilon, alpha, gamma, delta, mor)
+      out2: [P]       seed_status vector (scaled to [0, 1] then used as long in sim)
+      out3: [P, P]    beta matrix in [0, 1] (used by MetapopulationSEIRMBeta via mean(dim=0))
+      train_Y: passed-through for compatibility
+    """
+
+    def __init__(
+        self,
+        num_patch: int,
+        num_pub_features: int,
+        training_weeks: int = 0,
+        hidden_dim: int = 64,
+        out_dim: int = 7,
+        n_layers: int = 2,
+        bidirectional: bool = True,
+        device: Optional[torch.device] = None,
+    ) -> None:
+        super().__init__()
+
+        self.num_patch = int(num_patch)
+        self.num_pub_features = int(num_pub_features)
+        self.training_weeks = int(training_weeks)  # if 0, we infer from inputs in forward()
+
+        self.device = device  # optional; used only for constructing some tensors
+        out_layer_dim = 32
+
+        # Private encoder: expects seqs in [T, P, 1] after transpose in forward
+        self.emb_model = EmbedAttenSeq(
+            dim_seq_in=1,
+            dim_metadata=self.num_patch,   # meta_private is [P,P] row per patch
+            rnn_out=hidden_dim,
+            dim_out=hidden_dim,
+            n_layers=n_layers,
+            bidirectional=bidirectional,
+        )
+
+        # Public encoder: expects seqs in [T, B, F] after transpose in forward
+        # Your current wrapper uses meta_public = I[P], so dim_metadata=num_patch.
+        self.emb_model_2 = EmbedAttenSeq(
+            dim_seq_in=self.num_pub_features,
+            dim_metadata=self.num_patch,
+            rnn_out=hidden_dim,
+            dim_out=hidden_dim,
+            n_layers=n_layers,
+            bidirectional=bidirectional,
+        )
+
+        self.decoder = DecodeSeq(
+            dim_seq_in=1,
+            rnn_out=hidden_dim,
+            dim_out=out_layer_dim,
+            n_layers=1,
+            bidirectional=True,
+        )
+
+        # Output heads (mirror professor structure)
+        self.out_layer = nn.Sequential(
+            nn.Linear(out_layer_dim, out_layer_dim // 2),
+            nn.ReLU(),
+            nn.Linear(out_layer_dim // 2, out_dim),
+        )
+
+        self.out_layer2 = nn.Sequential(
+            nn.Linear(out_layer_dim, out_layer_dim // 2),
+            nn.ReLU(),
+            nn.Linear(out_layer_dim // 2, self.num_patch),
+        )
+
+        self.out_layer3 = nn.Sequential(
+            nn.Linear(out_layer_dim, out_layer_dim // 2),
+            nn.ReLU(),
+            nn.Linear(out_layer_dim // 2, self.num_patch * self.num_patch),
+        )
+
+        self.sigmoid = nn.Sigmoid()
+
+        def init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                m.bias.data.fill_(0.01)
+
+        self.out_layer.apply(init_weights)
+        self.out_layer2.apply(init_weights)
+        self.out_layer3.apply(init_weights)
+
+    def forward(
+        self,
+        x_private: torch.Tensor,
+        meta_private: torch.Tensor,
+        x_public: torch.Tensor,
+        meta_public: torch.Tensor,
+        train_X: torch.Tensor,
+        train_Y: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        # ---- normalize shapes to match professor expectations ----
+        # x_private: [P, T, 1] -> [T, P, 1]
+        if x_private.dim() != 3:
+            raise ValueError(f"x_private expected [P,T,1], got {tuple(x_private.shape)}")
+        x_priv_seq = x_private.transpose(1, 0)  # [T, P, 1]
+
+        # meta_private: [P,P] (ok)
+        if meta_private.dim() != 2:
+            raise ValueError(f"meta_private expected [P,P], got {tuple(meta_private.shape)}")
+
+        # x_public: allow [T,F] or [1,T,F] -> make [T,1,F] then transpose to [T,1,F] for GRU
+        if x_public.dim() == 2:
+            x_pub = x_public.unsqueeze(0)  # [1, T, F]
+        elif x_public.dim() == 3:
+            x_pub = x_public
+        else:
+            raise ValueError(f"x_public expected [T,F] or [B,T,F], got {tuple(x_public.shape)}")
+
+        # professor passes x_2.transpose(1,0) => [T,B,F]
+        x_pub_seq = x_pub.transpose(1, 0)  # [T, B, F]
+
+        # ---- encoders ----
+        x_embeds, encoder_hidden = self.emb_model.forward(x_priv_seq, meta_private)     # x_embeds: [P, H]
+        x_embeds_2, encoder_hidden_2 = self.emb_model_2.forward(x_pub_seq, meta_public)  # x_embeds_2: [B, H]
+
+        # ---- concatenate embeddings (mirror professor behavior) ----
+        # In professor code:
+        #   x_embeds = cat([x_embeds, x_embeds_2.mean(dim=0).unsqueeze(0)], dim=0)
+        # Here x_embeds is [P,H], x_embeds_2 is [B,H] -> mean over B gives [H]
+        x_embeds_cat = torch.cat([x_embeds, x_embeds_2.mean(dim=0).unsqueeze(0)], dim=0)  # [P+1, H]
+
+        # encoder_hidden: [layers*dir, batch=P, hidden] ; encoder_hidden_2: [layers*dir, batch=B, hidden]
+        # professor does:
+        #   encoder_hidden = cat([encoder_hidden, encoder_hidden_2.mean(dim=1).unsqueeze(1)], dim=1)
+        enc2_mean = encoder_hidden_2.mean(dim=1).unsqueeze(1)  # [layers*dir, 1, hidden]
+        encoder_hidden_cat = torch.cat([encoder_hidden, enc2_mean], dim=1)  # [layers*dir, P+1, hidden]
+
+        # ---- time grid for decoder ----
+        # professor uses arange(1, training_weeks+WEEKS_AHEAD+1); for NYC we just decode
+        # weekly parameters for however many weeks the current training horizon implies.
+        # If training_weeks not set, infer from x_public length (T) by ceil(T/7).
+        T = x_pub_seq.shape[0]
+        inferred_weeks = int(math.ceil(T / 7.0))
+        W = self.training_weeks if self.training_weeks > 0 else inferred_weeks
+
+        time_seq = torch.arange(1, W + 1, device=x_private.device).repeat(x_embeds_cat.shape[0], 1).unsqueeze(2)
+        Hi_data = (time_seq - time_seq.min()) / (time_seq.max() - time_seq.min() + 1e-8)
+
+        # ---- decode ----
+        # decoder expects context in [SeqLenContext, Batch, Hidden] style,
+        # but professor passes x_embeds (context) shaped [P+1,H] and decoder repeats it.
+        # Our DecodeSeq expects context shaped [B_ctx, 1, H] initially.
+        # After this context is transposed in decoder, we need [1, P+1, H] so that
+        # repeat(W, 1, 1) gives [W, P+1, H] matching inputs shape [W, P+1, H_embeddings]
+        context = x_embeds_cat.unsqueeze(0)  # [1, P+1, H]
+        emb = self.decoder(Hi_data, encoder_hidden_cat, context)  # [P+1, W, out_layer_dim]
+
+        # professor: out = out_layer(emb); out = mean(out, dim=0)
+        out = self.out_layer(emb)              # [P+1, W, out_dim]
+        out = torch.mean(out, dim=0)           # [W, out_dim]
+        out = self.sigmoid(out)                # bound to [0,1] (NYC: keep simple; scale outside if needed)
+
+        # professor: emb_mean = mean(emb, dim=0); emb_mean = emb_mean[-1,:]
+        emb_mean = torch.mean(emb, dim=0)      # [W, out_layer_dim]
+        emb_last = emb_mean[-1, :]             # [out_layer_dim]
+
+        out2 = self.sigmoid(self.out_layer2(emb_last))                          # [P]
+        out3 = self.sigmoid(self.out_layer3(emb_last).reshape(self.num_patch, self.num_patch))  # [P,P]
+
+        # return same 4-tuple API as professor
+        return out, out2, out3, train_Y
+
+
+# =========================
+# 4) Error-correction adapter
+# =========================
+
+
+class ErrorCorrectionAdapter(nn.Module):
+    """
+    Lightweight sequence model that learns a residual correction
+    on top of the mechanistic SEIRM simulator output.
+
+    Inputs:
+      preds: [T] or [B, T] daily city-wide cases from the simulator
+
+    Output:
+      corr:  same shape as preds; additive correction term
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 64,
+        num_layers: int = 1,
+        bidirectional: bool = True,
+    ) -> None:
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+
+        self.rnn = nn.GRU(
+            input_size=1,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=bidirectional,
+        )
+
+        out_dim = hidden_dim * (2 if bidirectional else 1)
+        self.out = nn.Linear(out_dim, 1)
+
+        def init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                m.bias.data.fill_(0.01)
+
+        self.out.apply(init_weights)
+
+    def forward(self, preds: torch.Tensor) -> torch.Tensor:
+        # Normalize to [B, T, 1] for GRU
+        if preds.dim() == 1:
+            x = preds.unsqueeze(0).unsqueeze(-1)  # [1, T, 1]
+            squeeze_batch = True
+        elif preds.dim() == 2:
+            x = preds.unsqueeze(-1)  # [B, T, 1]
+            squeeze_batch = False
+        else:
+            raise ValueError(f"ErrorCorrectionAdapter expected [T] or [B,T], got {tuple(preds.shape)}")
+
+        h, _ = self.rnn(x)
+        corr = self.out(h).squeeze(-1)  # [B, T]
+
+        if squeeze_batch:
+            corr = corr.squeeze(0)  # [T]
+
+        return corr
+
+
+# =========================
+# 5) Small utils
+# =========================
+
 def moving_average(x, w):
     return pd.Series(x).rolling(w, min_periods=1).mean().values
-

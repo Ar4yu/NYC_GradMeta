@@ -7,4 +7,10 @@ name = "nyc-gradmeta"
 version = "0.0.1"
 description = "NYC GradMeta pipeline (age-structured SEIRM + private signals)"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "torch>=2.0.0",
+  "numpy>=1.24.0",
+  "pandas>=1.5.0",
+  "pytrends>=4.9.2",
+  "matplotlib>=3.9.0",
+]

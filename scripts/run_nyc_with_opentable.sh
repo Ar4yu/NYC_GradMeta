@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# End-to-end NYC GradMeta pipeline:
-#   1) Build processed public datasets (cases, mobility, trends, OpenTable CSV)
-#   2) Build OpenTable private tensor (per-age-patch)
-#   3) Build online train/test CSVs for a given ASOF date
-#   4) Train and run the NN -> SEIRM -> error-correction adapter forecaster
+# NYC GradMeta pipeline using master public data + OpenTable private tensor.
 #
 # Usage:
-#   ./scripts/run_all.sh 2021-12-31
+#   ./scripts/run_nyc_with_opentable.sh 2022-10-15
 # or:
-#   ASOF=2021-12-31 ./scripts/run_all.sh
+#   ASOF=2022-10-15 ./scripts/run_nyc_with_opentable.sh
 
-ASOF="${1:-${ASOF:-2021-12-31}}"
+ASOF="${1:-${ASOF:-2022-10-15}}"
 CFG="configs/nyc.json"
 
-echo "==> Using ASOF=${ASOF}"
+echo "==> [MASTER + OPENTABLE] Using ASOF=${ASOF}"
 
 echo "==> Step 1: build processed public datasets"
 ./scripts/build_data.sh
@@ -30,7 +26,8 @@ python scripts/build_private_opentable_tensor.py \
 echo "==> Step 3: prepare online train/test CSVs"
 python scripts/prepare_online_nyc.py --config "${CFG}" --asof "${ASOF}"
 
-echo "==> Step 4: train + forecast with NN -> SEIRM -> error-correction adapter"
+echo "==> Step 4: train + forecast with NN -> SEIRM -> error-correction adapter (with private OpenTable)"
 python -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "${CFG}" --asof "${ASOF}"
 
-echo "Pipeline completed."
+echo "[MASTER + OPENTABLE] Pipeline completed."
+
