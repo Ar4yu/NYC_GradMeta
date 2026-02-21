@@ -13,4 +13,5 @@ dependencies = [
   "pandas>=1.5.0",
   "pytrends>=4.9.2",
   "matplotlib>=3.9.0",
+  "tqdm>=4.66.0",
 ]

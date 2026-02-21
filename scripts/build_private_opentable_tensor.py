@@ -7,8 +7,44 @@ import json
 
 
 def load_config(cfg_path: str) -> dict:
-    with open(cfg_path, "r") as f:
+    with open(cfg_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_population_share(pop_path: Path, num_patch: int) -> np.ndarray:
+    pop_df = pd.read_csv(pop_path)
+    pop_col = None
+    for col in ("population", "Population", "pop", "POPULATION"):
+        if col in pop_df.columns:
+            pop_col = col
+            break
+    if pop_col is None:
+        raise ValueError(f"population CSV must have a population column. Columns={pop_df.columns.tolist()}")
+
+    pop = pop_df[pop_col].to_numpy(dtype=np.float64)
+    if len(pop) != num_patch:
+        raise ValueError(f"Expected {num_patch} population rows, found {len(pop)}.")
+    total = pop.sum()
+    if total <= 0:
+        raise ValueError("Population sum must be positive.")
+    return pop / total
+
+
+def load_master_dates(master_path: Path, asof: pd.Timestamp) -> pd.DatetimeIndex:
+    master_df = pd.read_csv(master_path)
+    if "date" not in master_df.columns:
+        raise ValueError("master_daily_csv must include 'date'.")
+    master_df["date"] = pd.to_datetime(master_df["date"])
+    master_df = master_df.sort_values("date")
+    master_df = master_df[master_df["date"] <= asof].reset_index(drop=True)
+    if master_df.empty:
+        raise ValueError(f"No master rows found up to asof={asof.date()}.")
+    if master_df["date"].duplicated().any():
+        raise ValueError("master_daily_csv has duplicate dates.")
+    diffs = master_df["date"].diff().dropna().dt.days
+    if not (diffs == 1).all():
+        raise ValueError("master_daily_csv must be daily contiguous up to asof.")
+    return pd.DatetimeIndex(master_df["date"])
 
 
 def main():
@@ -35,15 +71,11 @@ def main():
     private_dir.mkdir(parents=True, exist_ok=True)
 
     pop_path = Path(nyc["paths"]["population_csv"])
-    pop_df = pd.read_csv(pop_path)
-    if "population" not in pop_df.columns:
-        raise ValueError("population CSV must have column 'population'.")
-    pop = pop_df["population"].to_numpy(dtype=np.float64)
-    if len(pop) != int(nyc["num_patch"]):
-        raise ValueError(f"Expected {nyc['num_patch']} population rows, found {len(pop)}.")
-    pop_share = pop / pop.sum()
+    P = int(nyc["num_patch"])
+    pop_share = load_population_share(pop_path, P)
 
     asof = pd.to_datetime(args.asof)
+    full_dates = load_master_dates(master_path, asof)
 
     # Load OpenTable series
     if args.opentable_csv is not None:
@@ -55,8 +87,7 @@ def main():
             raise ValueError(f"OpenTable CSV missing column '{args.opentable_col}'.")
         ot = ot.sort_values("date")
         ot = ot[ot["date"] <= asof].reset_index(drop=True)
-        series = ot[args.opentable_col].astype(float).to_numpy()
-        dates = ot["date"]
+        source = ot[["date", args.opentable_col]].copy()
     else:
         # Try to source from master file (if you merged it there already)
         df = pd.read_csv(master_path)
@@ -70,20 +101,33 @@ def main():
                 f"master_daily_csv missing '{args.opentable_col}'. "
                 f"Either add it to master, or pass --opentable_csv."
             )
-        series = df[args.opentable_col].astype(float).to_numpy()
-        dates = df["date"]
+        source = df[["date", args.opentable_col]].copy()
 
-    # Sanity: no NaNs
+    source = source.drop_duplicates("date").set_index("date").sort_index()
+    aligned = source.reindex(full_dates)
+    observed_days = int(aligned[args.opentable_col].notna().sum())
+    missing_days = len(aligned) - observed_days
+
+    # Fill missing dates so tensor length aligns with public series length.
+    # Interpolate over time, then forward/back fill residual gaps, then zero any remaining.
+    aligned[args.opentable_col] = (
+        aligned[args.opentable_col]
+        .astype(float)
+        .interpolate(method="time", limit_direction="both")
+        .ffill()
+        .bfill()
+        .fillna(0.0)
+    )
+
+    series = aligned[args.opentable_col].to_numpy(dtype=np.float32)
     if np.isnan(series).any():
-        raise ValueError("OpenTable series contains NaNs. Interpolate/fill in preprocessing first.")
-
+        raise ValueError("OpenTable aligned series contains NaNs after filling.")
     T = len(series)
-    P = int(nyc["num_patch"])
 
     # Build [P, T] tensor (float32). Replicate with population-weight scaling.
-    base = series.astype(np.float32)[None, :]            # [1, T]
-    weights = pop_share.astype(np.float32)[:, None]      # [P, 1]
-    private = weights * base                             # [P, T]
+    base = series[None, :]  # [1, T]
+    weights = pop_share.astype(np.float32)[:, None]  # [P, 1]
+    private = weights * base  # [P, T]
 
     # Optional: normalize to roughly [0,1] range for stability (keep contract simple)
     # If your professor pipeline already normalizes inside encoders, you can remove this.
@@ -97,7 +141,8 @@ def main():
 
     print("Wrote:", out_path)
     print("Tensor shape:", tuple(tensor.shape), "[num_patch, T]")
-    print("Date range:", dates.iloc[0].date(), "→", dates.iloc[-1].date())
+    print("Date range:", full_dates[0].date(), "→", full_dates[-1].date())
+    print("Observed OpenTable days before fill:", observed_days)
 
 
 if __name__ == "__main__":

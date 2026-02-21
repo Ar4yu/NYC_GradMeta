@@ -13,20 +13,22 @@
     "learning_rate": 0.0005,
     "weight_decay": 0.0,
 
-    "num_pub_features": 1,
+    "num_pub_features": 10,
 
     "paths": {
       "master_daily_csv": "data/processed/nyc_master_daily.csv",
       "online_dir": "data/processed/online",
       "private_dir": "data/processed/private",
-      "population_csv": "data/processed/population_us.csv",
+      "population_csv": "data/processed/population_nyc_age16_2020.csv",
       "migration_matrix_csv": "data/processed/contact_matrix_us.csv"
     },
 
     "target_name": "cases",
     "target_source_column": "total_cases",
 
-    "public_feature_mode": "mobility_index",
+    "public_feature_mode": "all_public",
+
+    "exclude_public_columns": [],
 
     "param_ranges": {
       "kappa":   [0.05, 0.90],

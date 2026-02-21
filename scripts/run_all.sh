@@ -14,6 +14,11 @@ set -euo pipefail
 
 ASOF="${1:-${ASOF:-2021-12-31}}"
 CFG="configs/nyc.json"
+if [ -x ".venv/bin/python" ]; then
+  PYTHON="${PYTHON:-.venv/bin/python}"
+else
+  PYTHON="${PYTHON:-python3}"
+fi
 
 echo "==> Using ASOF=${ASOF}"
 
@@ -21,16 +26,16 @@ echo "==> Step 1: build processed public datasets"
 ./scripts/build_data.sh
 
 echo "==> Step 2: build OpenTable private tensor"
-python scripts/build_private_opentable_tensor.py \
+"$PYTHON" scripts/build_private_opentable_tensor.py \
   --config "${CFG}" \
   --asof "${ASOF}" \
   --opentable_csv "data/processed/opentable_yoy_daily.csv" \
   --opentable_col "yoy_seated_diner"
 
 echo "==> Step 3: prepare online train/test CSVs"
-python scripts/prepare_online_nyc.py --config "${CFG}" --asof "${ASOF}"
+"$PYTHON" scripts/prepare_online_nyc.py --config "${CFG}" --asof "${ASOF}"
 
 echo "==> Step 4: train + forecast with NN -> SEIRM -> error-correction adapter"
-python -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "${CFG}" --asof "${ASOF}"
+"$PYTHON" -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "${CFG}" --asof "${ASOF}"
 
 echo "Pipeline completed."

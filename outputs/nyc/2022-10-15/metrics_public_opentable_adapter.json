@@ -1,0 +1,22 @@
+{
+  "asof": "2022-10-15",
+  "mode": "public_opentable",
+  "run_tag": "public_opentable_adapter",
+  "seed": 0,
+  "epochs": 1500,
+  "use_private": true,
+  "use_adapter": true,
+  "train_len": 127,
+  "test_len": 32,
+  "private_start_idx": 801,
+  "train_metrics": {
+    "rmse": 255.8906524221669,
+    "mae": 177.3218831340159,
+    "mape": 23.749335019606367
+  },
+  "test_metrics": {
+    "rmse": 303.63007765392643,
+    "mae": 188.26919174194336,
+    "mape": 27.751660367353004
+  }
+}

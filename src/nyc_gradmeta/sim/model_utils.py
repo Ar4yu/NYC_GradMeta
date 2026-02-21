@@ -102,14 +102,32 @@ class MetapopulationSEIRM:
         inf_force = self.migration_matrix @ (beta_j_eff + E_beta_j_eff)
         new_inf = torch.minimum(inf_force * self.state[:, 0].clone(), self.state[:, 0].clone())
 
-        self.state[:, 0] = self.state[:, 0].clone() - new_inf + params["delta"] * self.state[:, 3].clone()
-        self.state[:, 1] = new_inf + (1 - params["alpha"]) * self.state[:, 1].clone()
-        self.state[:, 2] = params["alpha"] * self.state[:, 1].clone() + (1 - params["gamma"] - params["mor"]) * self.state[:, 2].clone()
-        self.state[:, 3] = params["gamma"] * self.state[:, 2].clone() + (1 - params["delta"]) * self.state[:, 3].clone()
-        self.state[:, 4] = params["mor"] * self.state[:, 2].clone()
+        # Cache current compartments to avoid mixing updated values within the step
+        S = self.state[:, 0].clone()
+        E = self.state[:, 1].clone()
+        I = self.state[:, 2].clone()
+        R = self.state[:, 3].clone()
+        M = self.state[:, 4].clone()
 
-        NEW_INFECTIONS_TODAY = self.state[:, 2].clone()
-        NEW_DEATHS_TODAY = self.state[:, 4].clone()
+        new_E = new_inf
+        new_I = params["alpha"] * E
+        new_R = params["gamma"] * I
+        new_M = params["mor"] * I
+
+        S_next = S - new_E + params["delta"] * R
+        E_next = new_E + (1 - params["alpha"]) * E
+        I_next = new_I + (1 - params["gamma"] - params["mor"]) * I
+        R_next = new_R + (1 - params["delta"]) * R
+        M_next = M + new_M
+
+        self.state[:, 0] = S_next
+        self.state[:, 1] = E_next
+        self.state[:, 2] = I_next
+        self.state[:, 3] = R_next
+        self.state[:, 4] = M_next
+
+        NEW_INFECTIONS_TODAY = new_I
+        NEW_DEATHS_TODAY = new_M
         return NEW_DEATHS_TODAY, NEW_INFECTIONS_TODAY
 
 
@@ -130,16 +148,30 @@ class MetapopulationSEIRMBeta:
         self.num_agents = num_agents.to(self.device)
         self.seed_infection_status = seed_infection_status if seed_infection_status is not None else {}
 
+    # Scale so that seed_status in [0,1] yields initial infections on the order of 0.01% of pop per patch
+    SEED_SCALE = 1e-4
+
     def init_compartments(self, seed_infection_status=None):
         if seed_infection_status is None:
-            seed_infection_status = {}
-        initial_infections = torch.zeros((self.num_patches), device=self.device)
-        for idx, value in enumerate(seed_infection_status):
-            initial_infections[idx] = value
+            seed_infection_status = torch.zeros((self.num_patches), device=self.device)
+
+        if isinstance(seed_infection_status, dict):
+            initial_infections = torch.zeros((self.num_patches), device=self.device)
+            for k, v in seed_infection_status.items():
+                initial_infections[int(k)] = float(v)
+        elif isinstance(seed_infection_status, list):
+            initial_infections = torch.zeros((self.num_patches), device=self.device)
+            for idx, v in enumerate(seed_infection_status):
+                initial_infections[idx] = float(v)
+        else:
+            # seed_infection_status is [P] float in [0,1]; scale to infection counts
+            seed = seed_infection_status.float().to(self.device)
+            initial_infections = (seed * self.num_agents * self.SEED_SCALE).clamp(max=self.num_agents)
+        initial_infections = initial_infections.clamp(min=0)
 
         initial_conditions = torch.zeros((self.num_patches, 5), device=self.device)
         initial_conditions[:, 2] = initial_infections
-        initial_conditions[:, 0] = self.num_agents - initial_infections
+        initial_conditions[:, 0] = (self.num_agents - initial_infections).clamp(min=0)
         self.state = initial_conditions
 
     def step(self, t, values, seed_status, beta_matrix):
@@ -151,12 +183,11 @@ class MetapopulationSEIRMBeta:
             "gamma": values[4],
             "delta": values[5],
             "mor": values[6],
-            "seed_status": seed_status.long(),
             "beta_matrix": beta_matrix,
         }
 
         if t == 0:
-            self.init_compartments(seed_infection_status=params["seed_status"])
+            self.init_compartments(seed_infection_status=seed_status)
 
         N_eff = self.migration_matrix.T @ self.num_agents
         I_eff = self.migration_matrix.T @ self.state[:, 2].clone()
@@ -173,15 +204,33 @@ class MetapopulationSEIRMBeta:
         inf_force = self.migration_matrix @ (beta_j_eff + E_beta_j_eff)
         new_inf = torch.minimum(inf_force * self.state[:, 0].clone(), self.state[:, 0].clone())
 
-        self.state[:, 0] = self.state[:, 0].clone() - new_inf + params["delta"] * self.state[:, 3].clone()
-        self.state[:, 1] = new_inf + (1 - params["alpha"]) * self.state[:, 1].clone()
-        self.state[:, 2] = params["alpha"] * self.state[:, 1].clone() + (1 - params["gamma"] - params["mor"]) * self.state[:, 2].clone()
-        self.state[:, 3] = params["gamma"] * self.state[:, 2].clone() + (1 - params["delta"]) * self.state[:, 3].clone()
-        self.state[:, 4] = params["mor"] * self.state[:, 2].clone()
+        # Cache current compartments to avoid mixing updated values within the step
+        S = self.state[:, 0].clone()
+        E = self.state[:, 1].clone()
+        I = self.state[:, 2].clone()
+        R = self.state[:, 3].clone()
+        M = self.state[:, 4].clone()
 
-        NEW_INFECTIONS_TODAY = self.state[:, 2].clone()
-        NEW_DEATHS_TODAY = self.state[:, 4].clone()
-        return NEW_DEATHS_TODAY, NEW_INFECTIONS_TODAY
+        new_E = new_inf
+        new_I = params["alpha"] * E
+        new_R = params["gamma"] * I
+        new_M = params["mor"] * I
+
+        S_next = S - new_E + params["delta"] * R
+        E_next = new_E + (1 - params["alpha"]) * E
+        I_next = new_I + (1 - params["gamma"] - params["mor"]) * I
+        R_next = new_R + (1 - params["delta"]) * R
+        M_next = M + new_M
+
+        self.state[:, 0] = S_next
+        self.state[:, 1] = E_next
+        self.state[:, 2] = I_next
+        self.state[:, 3] = R_next
+        self.state[:, 4] = M_next
+
+        new_infections_today = new_I  # daily new cases per patch
+        new_deaths_today = new_M      # daily new deaths per patch
+        return new_deaths_today, new_infections_today
 
 
 # =========================
@@ -202,23 +251,39 @@ class TransformerAttn(nn.Module):
 
     def forward(self, seq):
         seq_in = seq.transpose(0, 1)  # [B, T, H]
-        value = self.value_layer(seq_in)
-        query = self.query_layer(seq_in)
-        keys = self.key_layer(seq_in)
-        weights = (value @ query.transpose(1, 2)) / math.sqrt(seq.shape[-1])
-        weights = torch.softmax(weights, -1)
-        return (weights @ keys).transpose(1, 0)  # [T, B, H]
+        Q = self.query_layer(seq_in)
+        K = self.key_layer(seq_in)
+        V = self.value_layer(seq_in)
+        dk = max(1, K.shape[-1])
+        weights = (Q @ K.transpose(1, 2)) / math.sqrt(dk)
+        weights = torch.softmax(weights, dim=-1)
+        out = weights @ V
+        return out.transpose(1, 0)  # [T, B, H]
 
     def forward_mask(self, seq, mask):
-        seq_in = seq.transpose(0, 1)
-        value = self.value_layer(seq_in)
-        query = self.query_layer(seq_in)
-        keys = self.key_layer(seq_in)
-        weights = (value @ query.transpose(1, 2)) / math.sqrt(seq.shape[-1])
-        weights = torch.exp(weights)
-        weights = (weights.transpose(1, 2) * mask.transpose(1, 0)).transpose(1, 2)
-        weights = weights / (weights.sum(-1, keepdim=True))
-        return (weights @ keys).transpose(1, 0) * mask
+        seq_in = seq.transpose(0, 1)  # [B, T, H]
+        mask_in = mask.transpose(0, 1) if mask.dim() == 2 else mask  # expect [B, T]
+
+        Q = self.query_layer(seq_in)
+        K = self.key_layer(seq_in)
+        V = self.value_layer(seq_in)
+        dk = max(1, K.shape[-1])
+
+        scores = (Q @ K.transpose(1, 2)) / math.sqrt(dk)  # [B, T, T]
+
+        if mask_in is not None:
+            attn_mask = mask_in.unsqueeze(1)  # [B, 1, T]
+            scores = scores.masked_fill(attn_mask <= 0, float("-inf"))
+
+        weights = torch.softmax(scores, dim=-1)
+        weights = torch.nan_to_num(weights, nan=0.0)
+        out = weights @ V  # [B, T, H]
+        out = out.transpose(1, 0)  # [T, B, H]
+
+        if mask_in is not None:
+            out = out * mask_in.transpose(0, 1).unsqueeze(-1)
+
+        return out
 
 
 class EmbedAttenSeq(nn.Module):

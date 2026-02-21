@@ -11,7 +11,12 @@ set -euo pipefail
 ASOF="${1:-2022-10-15}"
 MODE="${2:-master_opentable}"
 CFG="configs/nyc.json"
+if [ -x ".venv/bin/python" ]; then
+  PYTHON="${PYTHON:-.venv/bin/python}"
+else
+  PYTHON="${PYTHON:-python3}"
+fi
 
 echo "==> Saving visualization ASOF=${ASOF} mode=${MODE}"
-python -m nyc_gradmeta.visualization --asof "${ASOF}" --config "${CFG}" --mode "${MODE}"
+"$PYTHON" -m nyc_gradmeta.visualization --asof "${ASOF}" --config "${CFG}" --mode "${MODE}"
 echo "Done. Check results/nyc_forecast_${MODE}_${ASOF}.png"

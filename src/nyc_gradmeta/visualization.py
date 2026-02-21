@@ -1,6 +1,10 @@
 import argparse
 import json
+import os
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", ".venv/mplconfig")
+Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -93,4 +97,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
