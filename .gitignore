@@ -21,3 +21,4 @@ results/
 
 .venv/
 venv/
+*.egg-info/
