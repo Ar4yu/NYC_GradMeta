@@ -34,6 +34,25 @@ Inside that environment PyTorch will see the GPU automatically (`torch.cuda.is_a
 </details>
 
 <details>
+<summary>**1a) After clone / copying between machines**</summary>
+
+Make sure the processed-data tree exists and is populated before you rely on training runs. After `git clone`, run:
+
+```bash
+mkdir -p data/processed data/processed/online data/processed/private
+./scripts/build_data.sh
+.venv/bin/python scripts/build_private_opentable_tensor.py \
+  --asof 2022-10-15 \
+  --config configs/nyc.json \
+  --opentable_csv data/processed/opentable_yoy_daily.csv \
+  --opentable_col yoy_seated_diner
+```
+
+This recreates `data/processed/nyc_master_daily.csv`, the online `train/test` CSVs, and the OpenTable `[16,T]` tensor, so you can `git pull` on another machine and immediately run `./scripts/train_nyc.sh`. These directories remain in place even if the repo is copied or checked out elsewhere.
+
+</details>
+
+<details>
 <summary>**2) Data flows & preprocessing (documented for thesis reproducibility)**</summary>
 
 ### Core inputs
@@ -47,6 +66,15 @@ Inside that environment PyTorch will see the GPU automatically (`torch.cuda.is_a
 - `data/processed/online/public_feature_map_<ASOF>.csv`: column order reference for your thesis methods section.
 - `data/processed/online/split_info_<ASOF>.json`: reproducible split metadata (train/test lengths + window mode).
 - `data/processed/private/opentable_private_lap_<ASOF>.pt`: `[16, T]` tensor; `align_private_tensor` handles right alignment + normalization.
+
+### External source data for the new NYC baseline
+- NYC City daily case/hospitalization data (NYC OpenData COVID Daily Counts). [https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data](https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data)
+- OpenTable reservation dataset (Kaggle). [https://www.kaggle.com/datasets/pizacd/opentable-reservation-data](https://www.kaggle.com/datasets/pizacd/opentable-reservation-data)
+- Google RID mobility report (US/NYC). [https://www.google.com/covid19/mobility/](https://www.google.com/covid19/mobility/)
+- Google Trends “Covid 19” NYC view (Jan 2020–Jan 2022). [https://trends.google.com/explore?geo=US-NY&q=Covid%252019&date=2020-01-01%202022-01-01](https://trends.google.com/explore?geo=US-NY&q=Covid%252019&date=2020-01-01%202022-01-01)
+- Contact matrix (NYC/US) – document which source you copy into `data/processed/contact_matrix_us.csv` when updating the pipeline; if rebuilt, note the provenance in `README.md`.
+
+Collect each dataset in `data/processed` before running the pipeline, keep notes on the source URLs + collection date, and describe any additional preprocessing (e.g., resampling or aggregation) in this README so Professor Nguyen can reproduce the Feb 9 result. Mention whether the OpenTable window or Google Trends window limits the train/test horizon, and keep the contact matrix up to date with the current US configuration.
 
 ### Build commands (run before staging, example ASOF=2022-10-15)
 ```bash
