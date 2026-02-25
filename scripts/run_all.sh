@@ -11,9 +11,19 @@ set -euo pipefail
 #   ./scripts/run_all.sh 2021-12-31
 # or:
 #   ASOF=2021-12-31 ./scripts/run_all.sh
+#
+# Optional env knobs:
+#   STAGE=all|gradmeta|adapter|together   (default: all)
+#   USE_ADAPTER=1|0                        (default: 1)
+#   LONG_TRAIN=1                           (adds --long_train)
+#   CLIP_NORM=10                           (used when LONG_TRAIN=1)
 
 ASOF="${1:-${ASOF:-2021-12-31}}"
 CFG="configs/nyc.json"
+STAGE="${STAGE:-all}"
+USE_ADAPTER="${USE_ADAPTER:-1}"
+LONG_TRAIN="${LONG_TRAIN:-0}"
+CLIP_NORM="${CLIP_NORM:-}"
 if [ -x ".venv/bin/python" ]; then
   PYTHON="${PYTHON:-.venv/bin/python}"
 else
@@ -35,7 +45,17 @@ echo "==> Step 2: build OpenTable private tensor"
 echo "==> Step 3: prepare online train/test CSVs"
 "$PYTHON" scripts/prepare_online_nyc.py --config "${CFG}" --asof "${ASOF}"
 
-echo "==> Step 4: train + forecast with NN -> SEIRM -> error-correction adapter"
-"$PYTHON" -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "${CFG}" --asof "${ASOF}"
+echo "==> Step 4: staged train + forecast"
+TRAIN_ARGS=( -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "${CFG}" --asof "${ASOF}" --stage "${STAGE}" )
+if [ "${USE_ADAPTER}" = "1" ]; then
+  TRAIN_ARGS+=( --use_adapter )
+fi
+if [ "${LONG_TRAIN}" = "1" ]; then
+  TRAIN_ARGS+=( --long_train )
+  if [ -n "${CLIP_NORM}" ]; then
+    TRAIN_ARGS+=( --clip_norm "${CLIP_NORM}" )
+  fi
+fi
+"$PYTHON" "${TRAIN_ARGS[@]}"
 
 echo "Pipeline completed."

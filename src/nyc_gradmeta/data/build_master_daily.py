@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 from pathlib import Path
+import numpy as np
 
 
 # -------------------------------------------------
@@ -47,6 +48,19 @@ def _ensure_date_col(df: pd.DataFrame, name: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])
     return df
+
+
+def _parse_numeric_series(series: pd.Series) -> tuple[pd.Series, int]:
+    raw = series.copy()
+    cleaned = (
+        raw.astype(str)
+        .str.strip()
+        .str.replace(",", "", regex=False)
+        .replace({"": np.nan, "nan": np.nan, "None": np.nan})
+    )
+    parsed = pd.to_numeric(cleaned, errors="coerce")
+    bad_mask = raw.notna() & parsed.isna()
+    return parsed, int(bad_mask.sum())
 
 
 def main() -> None:
@@ -126,13 +140,17 @@ def main() -> None:
     # Fill missing values
     # ---------------------------
     # Counts: safest default is 0 if missing (especially after reindex)
+    parse_issues = {}
     for c in ["cases", "probable_cases", "hospitalizations", "deaths"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+        parsed, bad_count = _parse_numeric_series(df[c])
+        df[c] = parsed.fillna(0).clip(lower=0)
+        parse_issues[c] = bad_count
 
     # Mobility + trend: interpolate then ffill/bfill (smooth daily covariates)
     cov_cols = mob_cols + ["trend_covid_topic"]
     for c in cov_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+        parsed, _ = _parse_numeric_series(df[c])
+        df[c] = parsed
         df[c] = df[c].interpolate(limit_direction="both")
         df[c] = df[c].ffill().bfill()
 
@@ -152,6 +170,7 @@ def main() -> None:
     print("Shape:", df.shape)
     print("Min date:", df["date"].min())
     print("Max date:", df["date"].max())
+    print("Parse issues in count columns:", parse_issues)
     print("\nColumns:", list(df.columns))
     print("\nHead:")
     print(df.head())

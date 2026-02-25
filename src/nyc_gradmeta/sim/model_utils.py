@@ -9,11 +9,15 @@ This file is intentionally NYC-focused:
 
 It avoids legacy county/flu fetchers and dataset loaders.
 """
+# Changelog (2026-02-24):
+# - Added Bogotá-style in-network min/max scaling for epi params, seed, and beta heads.
+# - Added configurable seed interpretation mode ("fraction" vs "count") with robust clamping.
+# - Kept legacy interfaces and output shapes to minimize downstream risk.
 
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -21,6 +25,7 @@ import torch
 import torch.nn as nn
 
 SMOOTH_WINDOW = 7
+PARAM_ORDER = ("kappa", "symprob", "epsilon", "alpha", "gamma", "delta", "mor")
 
 
 # =========================
@@ -48,13 +53,35 @@ class MetapopulationSEIRM:
             seed_infection_status = {}
         initial_infections = torch.zeros((self.num_patches), device=self.device)
 
-        # NOTE: original professor code enumerated over the container; keep same semantics:
-        for idx, value in enumerate(seed_infection_status):
-            initial_infections[idx] = value
+        if isinstance(seed_infection_status, dict):
+            for k, v in seed_infection_status.items():
+                initial_infections[int(k)] = float(v)
+        elif isinstance(seed_infection_status, list):
+            for idx, value in enumerate(seed_infection_status):
+                if idx >= self.num_patches:
+                    break
+                initial_infections[idx] = float(value)
+        elif isinstance(seed_infection_status, torch.Tensor):
+            vals = seed_infection_status.to(self.device).float().reshape(-1)
+            if vals.shape[0] != self.num_patches:
+                raise ValueError(
+                    f"seed_infection_status size mismatch: expected {self.num_patches}, got {vals.shape[0]}"
+                )
+            initial_infections = vals
+        else:
+            for idx, value in enumerate(seed_infection_status):
+                if idx >= self.num_patches:
+                    break
+                initial_infections[idx] = float(value)
+
+        initial_infections = torch.nan_to_num(initial_infections, nan=0.0, posinf=0.0, neginf=0.0)
+        # Torch compatibility: avoid mixed scalar/tensor clamp(min=..., max=tensor).
+        initial_infections = initial_infections.clamp(min=0.0)
+        initial_infections = torch.minimum(initial_infections, self.num_agents)
 
         initial_conditions = torch.zeros((self.num_patches, 5), device=self.device)
         initial_conditions[:, 2] = initial_infections
-        initial_conditions[:, 0] = self.num_agents - initial_infections
+        initial_conditions[:, 0] = (self.num_agents - initial_infections).clamp(min=0.0)
         self.state = initial_conditions
 
     def step(self, t, values, seed_status, adjustment_matrix):
@@ -147,6 +174,7 @@ class MetapopulationSEIRMBeta:
         self.migration_matrix = migration_matrix.to(self.device)
         self.num_agents = num_agents.to(self.device)
         self.seed_infection_status = seed_infection_status if seed_infection_status is not None else {}
+        self.seed_mode = str(self.params.get("seed_mode", "fraction")).lower()
 
     # Scale so that seed_status in [0,1] yields initial infections on the order of 0.01% of pop per patch
     SEED_SCALE = 1e-4
@@ -156,18 +184,35 @@ class MetapopulationSEIRMBeta:
             seed_infection_status = torch.zeros((self.num_patches), device=self.device)
 
         if isinstance(seed_infection_status, dict):
-            initial_infections = torch.zeros((self.num_patches), device=self.device)
+            seed_vals = torch.zeros((self.num_patches), device=self.device)
             for k, v in seed_infection_status.items():
-                initial_infections[int(k)] = float(v)
+                seed_vals[int(k)] = float(v)
         elif isinstance(seed_infection_status, list):
-            initial_infections = torch.zeros((self.num_patches), device=self.device)
+            seed_vals = torch.zeros((self.num_patches), device=self.device)
             for idx, v in enumerate(seed_infection_status):
-                initial_infections[idx] = float(v)
+                seed_vals[idx] = float(v)
         else:
-            # seed_infection_status is [P] float in [0,1]; scale to infection counts
-            seed = seed_infection_status.float().to(self.device)
-            initial_infections = (seed * self.num_agents * self.SEED_SCALE).clamp(max=self.num_agents)
-        initial_infections = initial_infections.clamp(min=0)
+            seed_vals = seed_infection_status.float().to(self.device)
+
+        seed_vals = seed_vals.reshape(-1)
+        if seed_vals.shape[0] != self.num_patches:
+            raise ValueError(
+                f"seed_infection_status size mismatch: expected {self.num_patches}, got {seed_vals.shape[0]}"
+            )
+
+        seed_vals = torch.nan_to_num(seed_vals, nan=0.0, posinf=0.0, neginf=0.0)
+        max_seed = float(seed_vals.max().detach().cpu().item()) if seed_vals.numel() > 0 else 0.0
+        is_fraction = self.seed_mode == "fraction" and max_seed <= 1.0
+        if is_fraction:
+            # Fraction semantics: convert to counts with legacy SEED_SCALE.
+            initial_infections = seed_vals * self.num_agents * self.SEED_SCALE
+        else:
+            # Count semantics: use values directly.
+            initial_infections = seed_vals
+
+        # Torch compatibility: avoid mixed scalar/tensor clamp(min=..., max=tensor).
+        initial_infections = initial_infections.clamp(min=0.0)
+        initial_infections = torch.minimum(initial_infections, self.num_agents)
 
         initial_conditions = torch.zeros((self.num_patches, 5), device=self.device)
         initial_conditions[:, 2] = initial_infections
@@ -432,8 +477,8 @@ class CalibNNTwoEncoderThreeOutputs(nn.Module):
 
     Outputs:
       out:  [W, 7]    weekly epi params (kappa, symprob, epsilon, alpha, gamma, delta, mor)
-      out2: [P]       seed_status vector (scaled to [0, 1] then used as long in sim)
-      out3: [P, P]    beta matrix in [0, 1] (used by MetapopulationSEIRMBeta via mean(dim=0))
+      out2: [P]       seed_status vector
+      out3: [P, P]    beta matrix (used by MetapopulationSEIRMBeta via mean(dim=0))
       train_Y: passed-through for compatibility
     """
 
@@ -446,6 +491,12 @@ class CalibNNTwoEncoderThreeOutputs(nn.Module):
         out_dim: int = 7,
         n_layers: int = 2,
         bidirectional: bool = True,
+        param_mins: Optional[Union[Mapping[str, float], Sequence[float]]] = None,
+        param_maxs: Optional[Union[Mapping[str, float], Sequence[float]]] = None,
+        seed_min: Union[float, Sequence[float], np.ndarray, torch.Tensor] = 0.0,
+        seed_max: Union[float, Sequence[float], np.ndarray, torch.Tensor] = 1.0,
+        beta_min: float = 0.0,
+        beta_max: float = 1.0,
         device: Optional[torch.device] = None,
     ) -> None:
         super().__init__()
@@ -505,7 +556,20 @@ class CalibNNTwoEncoderThreeOutputs(nn.Module):
             nn.Linear(out_layer_dim // 2, self.num_patch * self.num_patch),
         )
 
-        self.sigmoid = nn.Sigmoid()
+        # Bogotá-style scaling inside the NN.
+        self.register_buffer("param_min_tensor", self._build_param_scale(param_mins, default=0.0))
+        self.register_buffer("param_max_tensor", self._build_param_scale(param_maxs, default=1.0))
+        self.register_buffer("seed_min_tensor", self._build_patch_scale(seed_min, default=0.0))
+        self.register_buffer("seed_max_tensor", self._build_patch_scale(seed_max, default=1.0))
+        self.register_buffer("beta_min_tensor", torch.tensor(float(beta_min), dtype=torch.float32))
+        self.register_buffer("beta_max_tensor", torch.tensor(float(beta_max), dtype=torch.float32))
+
+        if torch.any(self.param_max_tensor < self.param_min_tensor):
+            raise ValueError("param_maxs must be >= param_mins element-wise.")
+        if torch.any(self.seed_max_tensor < self.seed_min_tensor):
+            raise ValueError("seed_max must be >= seed_min element-wise.")
+        if float(self.beta_max_tensor.item()) < float(self.beta_min_tensor.item()):
+            raise ValueError("beta_max must be >= beta_min.")
 
         def init_weights(m):
             if isinstance(m, nn.Linear):
@@ -515,6 +579,42 @@ class CalibNNTwoEncoderThreeOutputs(nn.Module):
         self.out_layer.apply(init_weights)
         self.out_layer2.apply(init_weights)
         self.out_layer3.apply(init_weights)
+
+    def _build_param_scale(
+        self,
+        values: Optional[Union[Mapping[str, float], Sequence[float]]],
+        default: float,
+    ) -> torch.Tensor:
+        if values is None:
+            vals = [default] * len(PARAM_ORDER)
+        elif isinstance(values, Mapping):
+            vals = [float(values.get(k, default)) for k in PARAM_ORDER]
+        else:
+            vals = [float(v) for v in values]
+            if len(vals) != len(PARAM_ORDER):
+                raise ValueError(
+                    f"Expected {len(PARAM_ORDER)} parameter bounds, got {len(vals)}."
+                )
+        return torch.tensor(vals, dtype=torch.float32)
+
+    def _build_patch_scale(
+        self,
+        values: Union[float, Sequence[float], np.ndarray, torch.Tensor],
+        default: float,
+    ) -> torch.Tensor:
+        if values is None:
+            vals = [default] * self.num_patch
+        elif isinstance(values, torch.Tensor):
+            vals = [float(v) for v in values.detach().cpu().reshape(-1).tolist()]
+        elif np.isscalar(values):
+            vals = [float(values)] * self.num_patch
+        else:
+            vals = [float(v) for v in values]
+        if len(vals) == 1:
+            vals = vals * self.num_patch
+        if len(vals) != self.num_patch:
+            raise ValueError(f"Expected {self.num_patch} seed bounds, got {len(vals)}.")
+        return torch.tensor(vals, dtype=torch.float32)
 
     def forward(
         self,
@@ -586,14 +686,19 @@ class CalibNNTwoEncoderThreeOutputs(nn.Module):
         # professor: out = out_layer(emb); out = mean(out, dim=0)
         out = self.out_layer(emb)              # [P+1, W, out_dim]
         out = torch.mean(out, dim=0)           # [W, out_dim]
-        out = self.sigmoid(out)                # bound to [0,1] (NYC: keep simple; scale outside if needed)
+        out = torch.sigmoid(out)               # internal stable parameterization
+        # Bogotá-style scaling inside the NN.
+        out = self.param_min_tensor + (self.param_max_tensor - self.param_min_tensor) * out
 
         # professor: emb_mean = mean(emb, dim=0); emb_mean = emb_mean[-1,:]
         emb_mean = torch.mean(emb, dim=0)      # [W, out_layer_dim]
         emb_last = emb_mean[-1, :]             # [out_layer_dim]
 
-        out2 = self.sigmoid(self.out_layer2(emb_last))                          # [P]
-        out3 = self.sigmoid(self.out_layer3(emb_last).reshape(self.num_patch, self.num_patch))  # [P,P]
+        out2 = torch.sigmoid(self.out_layer2(emb_last))  # [P]
+        out2 = self.seed_min_tensor + (self.seed_max_tensor - self.seed_min_tensor) * out2
+
+        out3 = torch.sigmoid(self.out_layer3(emb_last).reshape(self.num_patch, self.num_patch))  # [P,P]
+        out3 = self.beta_min_tensor + (self.beta_max_tensor - self.beta_min_tensor) * out3
 
         # return same 4-tuple API as professor
         return out, out2, out3, train_Y

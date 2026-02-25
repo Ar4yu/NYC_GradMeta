@@ -18,6 +18,20 @@ def load_config(cfg_path: str) -> dict:
         return json.load(f)
 
 
+def parse_numeric_column(series: pd.Series, col_name: str) -> pd.Series:
+    cleaned = (
+        series.astype(str)
+        .str.strip()
+        .str.replace(",", "", regex=False)
+        .replace({"": np.nan, "nan": np.nan, "None": np.nan})
+    )
+    parsed = pd.to_numeric(cleaned, errors="coerce")
+    bad_count = int(series.notna().sum() - parsed.notna().sum())
+    if bad_count > 0:
+        print(f"[warn] Column '{col_name}' had {bad_count} non-numeric values; filling with 0.")
+    return parsed.fillna(0.0)
+
+
 def build_public_features(
     df: pd.DataFrame,
     mode: str,
@@ -117,7 +131,7 @@ def main():
     src = nyc.get("target_source_column", "total_cases")
     if src not in df.columns:
         raise ValueError(f"Configured target_source_column '{src}' not found in master_daily_csv columns.")
-    df["cases"] = df[src].astype(float)
+    df["cases"] = parse_numeric_column(df[src], src)
 
     mode = nyc.get("public_feature_mode", "all_public")
     feature_df, mapping = build_public_features(

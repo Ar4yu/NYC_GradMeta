@@ -1,8 +1,7 @@
 {
-  "split_mode": "ratio",
-  "train_ratio": 0.8,
-  "train_days": 127,
-  "test_days": 32,
-  "window_days": 159,
+  "split_mode": "horizon",
+  "test_days": 28,
+  "train_days": 932,
+  "window_days": null,
   "asof": "2022-10-15"
 }

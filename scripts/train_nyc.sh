@@ -12,8 +12,13 @@ set -euo pipefail
 #   ./scripts/train_nyc.sh --asof 2022-10-15 --mode opentable      --force-prep
 #
 # Env knobs:
-#   EPOCHS=50          # override epochs passed to forecasting script
-#   USE_ADAPTER=1      # add --use_adapter
+#   EPOCHS=50               # backward-compatible base epoch override
+#   EPOCHS_GRADMETA=200     # stage-specific epochs
+#   EPOCHS_ADAPTER=100
+#   EPOCHS_TOGETHER=200
+#   STAGE=all               # gradmeta|adapter|together|all
+#   USE_ADAPTER=1           # add --use_adapter
+#   ADAPTER_LOSS=mse        # mse|rmse
 #   PYTHON=/custom/python
 #   OPENTABLE_CSV=...  # override private input CSV (default: data/processed/opentable_yoy_daily.csv)
 #   OPENTABLE_COL=...  # override column used in private builder (default: yoy_seated_diner)
@@ -21,9 +26,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: train_nyc.sh [--asof YYYY-MM-DD] [--mode public_only|opentable] [--force-prep|--skip-prep] [--long]
+                    [--stage gradmeta|adapter|together|all]
+                    [--epochs-gradmeta N] [--epochs-adapter N] [--epochs-together N]
+                    [--adapter-loss mse|rmse] [--use-adapter]
 Defaults:
   --asof defaults to $ASOF env or 2022-10-15
   --mode public_only
+  --stage all
   prep: auto (run only if files missing). Use --force-prep to rebuild, --skip-prep to require existing files.
   --long enables long-training regimen (num_epochs_long or 5x default) and passes clip norm if set.
 EOF
@@ -34,6 +43,11 @@ MODE="${MODE:-public_only}"
 LONG=0
 CLIP_NORM="${CLIP_NORM:-}"
 USE_ADAPTER=0
+STAGE="${STAGE:-all}"
+ADAPTER_LOSS="${ADAPTER_LOSS:-mse}"
+EPOCHS_GRADMETA="${EPOCHS_GRADMETA:-}"
+EPOCHS_ADAPTER="${EPOCHS_ADAPTER:-}"
+EPOCHS_TOGETHER="${EPOCHS_TOGETHER:-}"
 FORCE_PREP=0
 SKIP_PREP=0
 
@@ -45,6 +59,11 @@ while [[ $# -gt 0 ]]; do
     --skip-prep) SKIP_PREP=1; shift ;;
     --long) LONG=1; shift ;;
     --use-adapter|--use_adapter) USE_ADAPTER=1; shift ;;
+    --stage) STAGE="$2"; shift 2 ;;
+    --adapter-loss|--adapter_loss) ADAPTER_LOSS="$2"; shift 2 ;;
+    --epochs-gradmeta|--epochs_gradmeta) EPOCHS_GRADMETA="$2"; shift 2 ;;
+    --epochs-adapter|--epochs_adapter) EPOCHS_ADAPTER="$2"; shift 2 ;;
+    --epochs-together|--epochs_together) EPOCHS_TOGETHER="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
   esac
@@ -92,6 +111,22 @@ case "$mode_norm" in
     ;;
   *)
     echo "Invalid --mode '${MODE}'. Use public_only or opentable." >&2
+    exit 1
+    ;;
+esac
+
+case "$STAGE" in
+  gradmeta|adapter|together|all) ;;
+  *)
+    echo "Invalid --stage '${STAGE}'. Use gradmeta|adapter|together|all." >&2
+    exit 1
+    ;;
+esac
+
+case "$ADAPTER_LOSS" in
+  mse|rmse) ;;
+  *)
+    echo "Invalid --adapter-loss '${ADAPTER_LOSS}'. Use mse|rmse." >&2
     exit 1
     ;;
 esac
@@ -146,8 +181,18 @@ echo "==> Training (${RUN_MODE}) ASOF=${ASOF}"
 echo "    ONLINE_DIR=$ONLINE_DIR"
 echo "    PRIVATE_DIR=$PRIVATE_DIR"
 TRAIN_ARGS=( -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "$CFG" --asof "$ASOF" $PRIVATE_FLAG )
+TRAIN_ARGS+=( --stage "$STAGE" --adapter_loss "$ADAPTER_LOSS" )
 if [[ -n "${EPOCHS:-}" ]]; then
   TRAIN_ARGS+=( --epochs "$EPOCHS" )
+fi
+if [[ -n "$EPOCHS_GRADMETA" ]]; then
+  TRAIN_ARGS+=( --epochs_gradmeta "$EPOCHS_GRADMETA" )
+fi
+if [[ -n "$EPOCHS_ADAPTER" ]]; then
+  TRAIN_ARGS+=( --epochs_adapter "$EPOCHS_ADAPTER" )
+fi
+if [[ -n "$EPOCHS_TOGETHER" ]]; then
+  TRAIN_ARGS+=( --epochs_together "$EPOCHS_TOGETHER" )
 fi
 if [[ $LONG -eq 1 ]]; then
   TRAIN_ARGS+=( --long_train )
@@ -161,4 +206,8 @@ fi
 
 "$PYTHON" "${TRAIN_ARGS[@]}"
 
-echo "==> Done. Outputs in outputs/nyc/${ASOF}/ (run_tag=${RUN_MODE}${USE_ADAPTER:+_adapter})."
+ADAPTER_SUFFIX=""
+if [[ $USE_ADAPTER -eq 1 ]]; then
+  ADAPTER_SUFFIX="_adapter"
+fi
+echo "==> Done. Outputs in outputs/nyc/${ASOF}/ (run_tag=${RUN_MODE}${ADAPTER_SUFFIX})."
