@@ -1,6 +1,7 @@
 # NYC GradMeta (Thesis Runbook)
 
 This repo mirrors the professor's Bogotá GradMeta/GradABM stack on NYC data. The pipeline:
+
 - encodes private (OpenTable) + public sequences via the two-encoder calibration net
 - decodes weekly epi parameters + seeds + beta matrix using Bogotá-style sigmoid → min/max scaling
 - runs the Metapopulation SEIRM(Beta) simulator + optional adapter correction with a Bogotá-inspired 3-stage regimen (GradMeta → Adapter → Together)
@@ -56,18 +57,22 @@ This recreates `data/processed/nyc_master_daily.csv`, the online `train/test` CS
 <summary>**2) Data flows & preprocessing (documented for thesis reproducibility)**</summary>
 
 ### Core inputs
+
 - `data/processed/nyc_master_daily.csv`: merged cases/deaths/hosp + mobility + trends, ready for `prepare_online_nyc.py`.
 - `data/processed/opentable_yoy_daily.csv`: private OpenTable YoY signal used to build the `[16, T]` tensor.
+- The OpenTable file contains 170 days of true signal (2020-02-18 → 2020-08-05). The tensor builder right-aligns these rows in `opentable_private_lap_<ASOF>.pt` so the model sees only those dates where the private data actually exists while still matching the full `nyc_master_daily` timeline.
 - `data/processed/contact_matrix_us.csv` and `data/processed/population_nyc_age16_2020.csv`: simulator contact + population constants.
 - `configs/nyc.json`: central configuration (patch count, `num_pub_features`, epoch defaults, file paths, biasing ranges, `param_ranges`).
 
 ### Generated artifacts per ASOF
+
 - `data/processed/online/train_<ASOF>.csv` / `test_<ASOF>.csv`: final public covariates + target (`cases` column removed from features). `SeqDataset` loads them directly.
 - `data/processed/online/public_feature_map_<ASOF>.csv`: column order reference for your thesis methods section.
 - `data/processed/online/split_info_<ASOF>.json`: reproducible split metadata (train/test lengths + window mode).
 - `data/processed/private/opentable_private_lap_<ASOF>.pt`: `[16, T]` tensor; `align_private_tensor` handles right alignment + normalization.
 
 ### External source data for the new NYC baseline
+
 - NYC City daily case/hospitalization data (NYC OpenData COVID Daily Counts). [https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data](https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data)
 - OpenTable reservation dataset (Kaggle). [https://www.kaggle.com/datasets/pizacd/opentable-reservation-data](https://www.kaggle.com/datasets/pizacd/opentable-reservation-data)
 - Google RID mobility report (US/NYC). [https://www.google.com/covid19/mobility/](https://www.google.com/covid19/mobility/)
@@ -77,6 +82,7 @@ This recreates `data/processed/nyc_master_daily.csv`, the online `train/test` CS
 Collect each dataset in `data/processed` before running the pipeline, keep notes on the source URLs + collection date, and describe any additional preprocessing (e.g., resampling or aggregation) in this README so Professor Nguyen can reproduce the Feb 9 result. Mention whether the OpenTable window or Google Trends window limits the train/test horizon, and keep the contact matrix up to date with the current US configuration.
 
 ### Build commands (run before staging, example ASOF=2022-10-15)
+
 ```bash
 .venv/bin/python scripts/prepare_online_nyc.py --asof 2022-10-15 --config configs/nyc.json
 .venv/bin/python scripts/build_private_opentable_tensor.py \
@@ -87,12 +93,20 @@ Collect each dataset in `data/processed` before running the pipeline, keep notes
 ```
 
 The scripts also write:
+
 - `data/processed/online/split_info_<ASOF>.json`
 - `data/processed/online/public_feature_map_<ASOF>.csv`
 - Private tensor metadata (shape, date range) printed to console.
 
+Long-running staged training that matches DPEpiNN’s schedule (Stage 1 ~5k epochs, Stages 2/3 ~1k epochs each) and reuses existing inputs:
+
+```bash
+USE_ADAPTER=1 LONG_TRAIN=1 CLIP_NORM=10 STAGE=all ./scripts/run_nyc_with_opentable.sh 2022-10-15 --skip-prep
+```
+
 ### Numeric parsing safeguard (important)
-- NYC raw case files may contain quoted thousands separators (for example `"1,034"`).  
+
+- NYC raw case files may contain quoted thousands separators (for example `"1,034"`).
 - The pipeline now strips commas and coercively parses counts in:
   - `src/nyc_gradmeta/data/build_cases_nyc.py`
   - `src/nyc_gradmeta/data/build_master_daily.py`
@@ -100,6 +114,7 @@ The scripts also write:
 - Any remaining non-numeric tokens are reported and filled as `0` with a warning to avoid silent corruption.
 
 ### Feature lagging & temporal context
+
 - `public_feature_map` shows the mapping used by `SeqDataset`: `pub_0=probable_cases`, `pub_1=hospitalizations`, `pub_2=deaths`, `pub_3=mob_retail`, `pub_4=mob_grocery`, `pub_5=mob_parks`, `pub_6=mob_transit`, `pub_7=mob_work`, `pub_8=mob_residential`, `pub_9=trend_covid_topic`.
 - The calibration network consumes the most recent `train_days` worth of these public covariates plus the aligned private tensor; `series_to_supervised` builds lagged public features (`n_in=4`, `n_out=1`) so the encoder sees the last four days before decoding weekly parameters.
 - Private data is right-aligned to match the train+test window, padded to `[num_patch, train+test, 1]`, and normalized (`private_norm=zscore_time` by default), ensuring the encoder sees consistent historical context.
@@ -111,20 +126,23 @@ The scripts also write:
 <summary>**3) Training + forecasting (foolproof commands)**</summary>
 
 ### Shell helpers for any experience level
+
 - `scripts/train_nyc.sh`: universal trainer. Flags:
   - `--mode public_only|opentable`
   - `--stage gradmeta|adapter|together|all`
   - `--epochs_gradmeta`, `--epochs_adapter`, `--epochs_together`
   - `--long_train`, `--clip_norm`
+  - `--adapter_target smoothed|raw` (default `smoothed`); determines whether the adapter is trained on the smoothed public signal (default) or the raw daily counts while the main simulator loss stays on the smoothed target.
   - `--adapter-loss mse|rmse`, `--use_adapter`
   - `--skip-prep`, `--force-prep`, `--minimal_outputs`
 - Wrapper scripts call it with sensible defaults and ensure data is built:
   - `scripts/run_nyc_master_only.sh ASOF`
-  - `scripts/run_nyc_with_opentable.sh ASOF` (also rebuilds private tensor)
+  - `scripts/run_nyc_with_opentable.sh ASOF` (also rebuilds private tensor; now propagates any additional flags you append after the ASOF argument so `--adapter_target raw`, `--together_loss_weight`, etc. get forwarded)
   - `scripts/run_all.sh ASOF` (full pipeline from raw CSVs)
   - `scripts/run_from_processed.sh ASOF [--no_private] [--epochs N]`
 
 ### How staged training runs
+
 - Stage 1 `gradmeta`: trains `CalibNNTwoEncoderThreeOutputs` alone against simulator RMSE; the best `param_model.pt` checkpoint is saved.
 - Stage 2 `adapter`: freezes that model, trains `ErrorCorrectionAdapter` on `y_train_s - base_preds` (loss type controlled by `--adapter-loss`), and saves `error_adapter.pt`.
 - Stage 3 `together`: unfreezes both modules, blends simulator fit with adapter residual loss using an annealing factor, and updates both checkpoints when the combined loss improves.
@@ -132,13 +150,19 @@ The scripts also write:
 - See `src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py` for the exact loops and `scripts/train_nyc.sh` for CLI wiring.
 
 ### Copy/paste ready commands
+
 ```bash
 ./scripts/run_nyc_master_only.sh 2022-10-15
 USE_ADAPTER=1 ./scripts/run_nyc_with_opentable.sh 2022-10-15
-LONG_TRAIN=1 CLIP_NORM=10 STAGE=all USE_ADAPTER=1 ./scripts/run_nyc_with_opentable.sh 2022-10-15
+LONG_TRAIN=1 CLIP_NORM=10 STAGE=all USE_ADAPTER=1 ./scripts/run_nyc_with_opentable.sh 2022-10-15 --skip-prep
 ```
 
+### Adapter target selection
+
+By default, `--adapter_target smoothed` keeps the adapter residual on the smoothed case series (matching the simulator’s loss). Switch to `--adapter_target raw` if you want the adapter to learn corrections relative to the raw daily counts before smoothing; the main simulator still minimizes smoothed loss, so this lets the adapter account for higher-frequency noise without destabilizing the mechanistic core. Try both settings (e.g., `--adapter_target raw --self_check`) before your long runs and log which one you used in `outputs/nyc/<ASOF>/metrics_summary.csv`.
+
 ### Reload full pipeline after preprocessing fixes
+
 ```bash
 ./scripts/build_data.sh
 .venv/bin/python scripts/build_private_opentable_tensor.py --config configs/nyc.json --asof 2022-10-15 --opentable_csv data/processed/opentable_yoy_daily.csv --opentable_col yoy_seated_diner
@@ -147,6 +171,7 @@ LONG_TRAIN=1 CLIP_NORM=10 STAGE=all USE_ADAPTER=1 ./scripts/run_from_processed.s
 ```
 
 ### From processed data with stages
+
 ```bash
 LONG_TRAIN=1 CLIP_NORM=10 STAGE=all USE_ADAPTER=1 ./scripts/run_from_processed.sh 2022-10-15
 STAGE=gradmeta ./scripts/run_from_processed.sh 2022-10-15 --no_private
@@ -154,6 +179,7 @@ STAGE=adapter ./scripts/run_from_processed.sh 2022-10-15 --epochs 50
 ```
 
 ### For thesis experiments
+
 - Set `STAGE=gradmeta` / `adapter` / `together` to isolate each phase.
 - Use `--long_train` + `CLIP_NORM` for the extended regimen used in your recent runs.
 - Use `--minimal_outputs` to keep only `run_tag`-specific artifacts when writing to limited storage.
@@ -164,9 +190,10 @@ STAGE=adapter ./scripts/run_from_processed.sh 2022-10-15 --epochs 50
 <summary>**4) Outputs & artifacts (where to look for results)**</summary>
 
 Runs write into `outputs/nyc/<ASOF>/` (matching `run_tag`). Files:
+
 - `param_model.pt`, `error_adapter.pt` (if adapter stage ran).
-- `forecast_<N>d(.csv/.npy)` *and* `forecast_<N>d_<run_tag>.csv/.npy` (plus `forecast_28d` aliases when `N=28`).
-- `fit_train_test_<run_tag>.csv` *and* `.png` (unless `--minimal_outputs`).
+- `forecast_<N>d(.csv/.npy)` _and_ `forecast_<N>d_<run_tag>.csv/.npy` (plus `forecast_28d` aliases when `N=28`).
+- `fit_train_test_<run_tag>.csv` _and_ `.png` (unless `--minimal_outputs`).
 - `metrics_<run_tag>.json` and `metrics_summary.csv` (appended each run; use for thesis tables).`metrics_summary.csv` is the canonical comparison table with RMSE/MAE/MAPE/seed info.
 
 Logs print stage progress and warnings if predictions exceed 1e7 (blow-up guard). Always verify the PNG at `outputs/nyc/<ASOF>/fit_train_test_<run_tag>.png` before writing your thesis figures.
@@ -198,16 +225,16 @@ Logs print stage progress and warnings if predictions exceed 1e7 (blow-up guard)
 <details>
 <summary>**7) Data inventory (tables + scripts)**</summary>
 
-| Dataset | Rows | Columns | Description | Generated by |
-| --- | --- | --- | --- | --- |
-| `data/processed/nyc_master_daily.csv` | 960 | 13 | Combined cases, hospitalizations, deaths, mobility indexes, scope trends, and `total_cases`. | `scripts/build_data.sh` |
-| `data/processed/opentable_yoy_daily.csv` | 170 | 2 | OpenTable YoY diners (date + `yoy_seated_diner`). | `scripts/build_private_opentable_tensor.py` (preprocessing steps) |
-| `data/processed/online/train_<ASOF>.csv` | ~932 | 11 | Train window: `cases` + `pub_0`…`pub_9`. | `scripts/prepare_online_nyc.py` |
-| `data/processed/online/test_<ASOF>.csv` | 28 | 11 | Test window, same schema as train. | `scripts/prepare_online_nyc.py` |
-| `data/processed/private/opentable_private_lap_<ASOF>.pt` | 16 × T |  | Per-patch OpenTable tensor, zero-padded + normalized (`align_private_tensor`). | `scripts/build_private_opentable_tensor.py` |
+| Dataset                                                  | Rows   | Columns | Description                                                                                  | Generated by                                                      |
+| -------------------------------------------------------- | ------ | ------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `data/processed/nyc_master_daily.csv`                    | 960    | 13      | Combined cases, hospitalizations, deaths, mobility indexes, scope trends, and `total_cases`. | `scripts/build_data.sh`                                           |
+| `data/processed/opentable_yoy_daily.csv`                 | 170    | 2       | OpenTable YoY diners (date + `yoy_seated_diner`).                                            | `scripts/build_private_opentable_tensor.py` (preprocessing steps) |
+| `data/processed/online/train_<ASOF>.csv`                 | ~932   | 11      | Train window: `cases` + `pub_0`…`pub_9`.                                                     | `scripts/prepare_online_nyc.py`                                   |
+| `data/processed/online/test_<ASOF>.csv`                  | 28     | 11      | Test window, same schema as train.                                                           | `scripts/prepare_online_nyc.py`                                   |
+| `data/processed/private/opentable_private_lap_<ASOF>.pt` | 16 × T |         | Per-patch OpenTable tensor, zero-padded + normalized (`align_private_tensor`).               | `scripts/build_private_opentable_tensor.py`                       |
 
-- `scripts/prepare_online_nyc.py` extracts numeric public covariates, enforces `num_pub_features`, and drops the `cases` target column before writing `train_/test_` splits and metadata (`split_info`, `public_feature_map`).  
-- `align_private_tensor` in `src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py` right-aligns the loaded tensor, pads to match `[train + test]`, and applies `private_norm` (`zscore_time` by default).  
+- `scripts/prepare_online_nyc.py` extracts numeric public covariates, enforces `num_pub_features`, and drops the `cases` target column before writing `train_/test_` splits and metadata (`split_info`, `public_feature_map`).
+- `align_private_tensor` in `src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py` right-aligns the loaded tensor, pads to match `[train + test]`, and applies `private_norm` (`zscore_time` by default).
 - `scripts/build_private_opentable_tensor.py` also prints the tensor shape/date range; the final `.pt` is `[16, T]` and loaded via `torch.load` (see training script lines referencing `private_dir`).
 
 </details>

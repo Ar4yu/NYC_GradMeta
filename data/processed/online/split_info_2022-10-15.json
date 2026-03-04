@@ -1,7 +1,7 @@
 {
   "split_mode": "horizon",
   "test_days": 28,
-  "train_days": 932,
-  "window_days": null,
+  "train_days": 142,
+  "window_days": 170,
   "asof": "2022-10-15"
 }

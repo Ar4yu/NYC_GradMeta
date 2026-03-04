@@ -377,6 +377,18 @@ def main():
         help="Scale stage epochs by a long-train multiplier (defaults to 5x or cfg-derived).",
     )
     ap.add_argument("--clip_norm", type=float, default=None, help="Gradient clipping max norm (e.g., 10.0).")
+    ap.add_argument("--val_split", type=float, default=0.2, help="Fraction of train window reserved for validation (0-1).")
+    ap.add_argument("--patience", type=int, default=50, help="Validation epochs to wait before early stopping.")
+    ap.add_argument("--no_early_stop", action="store_true", help="Disable early stopping even if validation split exists.")
+    ap.add_argument("--main_target", choices=["smoothed", "raw"], default="smoothed", help="Simulator loss target (smoothed or raw counts).")
+    ap.add_argument("--together_loss_weight", type=float, default=None, help="Fixed weight for aux loss in Stage3; overrides annealing.")
+    ap.add_argument("--together_loss_scale", type=float, default=1.0, help="Scale factor applied to the adapter aux loss.")
+    ap.add_argument(
+        "--adapter_target",
+        choices=["smoothed", "raw"],
+        default="smoothed",
+        help="Train adapter residual on smoothed (default) or raw cases while keeping the simulator loss on smoothed targets.",
+    )
     ap.add_argument("--seed", type=int, default=None, help="Random seed; defaults to config seed.")
     ap.add_argument("--use_adapter", action="store_true", help="Enable optional error-correction adapter.")
     ap.add_argument("--adapter_loss", choices=["mse", "rmse"], default="mse")
@@ -548,12 +560,13 @@ def main():
     (X_train_b, y_train_b) = next(iter(train_loader))
     X_train = X_train_b.squeeze(0).to(device)
     y_train = y_train_b.squeeze(0).to(device)
-    training_num_steps = int(y_train.shape[0])
+    training_num_steps_full = int(y_train.shape[0])
     y_train_raw_np = y_train.detach().cpu().numpy().astype(np.float64)
+    y_train_raw_tensor = y_train.clone()
 
     private_train = align_private_tensor(
         private_full,
-        training_num_steps,
+        training_num_steps_full,
         num_patch,
         device,
         start_idx=private_start_idx,
@@ -561,10 +574,36 @@ def main():
     )
 
     y_np = y_train.detach().cpu().numpy().copy()
-    k = min(training_num_steps, train_days)
+    k = min(training_num_steps_full, train_days)
     if k > 0:
         y_np[:k] = moving_average(y_np[:k], int(cfg["smooth_window"]))
     y_train_s = torch.tensor(y_np, dtype=torch.float32, device=device)
+
+    val_len = min(28, max(0, int(training_num_steps_full * args.val_split)))
+    train_len = max(1, training_num_steps_full - val_len)
+    use_val = val_len > 0 and not args.no_early_stop
+
+    X_train_full = X_train
+    y_train_raw_full = y_train_raw_tensor
+    y_train_s_full = y_train_s
+    private_full_tensor = private_train
+
+    if val_len > 0:
+        X_train = X_train_full[:train_len]
+        y_train = y_train_raw_full[:train_len]
+        y_train_s = y_train_s_full[:train_len]
+        private_train = private_full_tensor[:, :train_len, :]
+        X_val = X_train_full[train_len : train_len + val_len]
+        y_val = y_train_raw_full[train_len : train_len + val_len]
+        y_val_s = y_train_s_full[train_len : train_len + val_len]
+        private_val = private_full_tensor[:, train_len : train_len + val_len, :]
+    else:
+        X_val = torch.zeros_like(X_train_full[:0])
+        y_val = torch.zeros_like(y_train_raw_full[:0])
+        y_val_s = torch.zeros_like(y_train_s_full[:0])
+        private_val = private_full_tensor[:, :0, :]
+
+    training_num_steps = X_train.shape[0]
 
     _, y_test_t = test_dataset[0]
     y_test_np = y_test_t.detach().cpu().numpy().astype(np.float64)
@@ -678,6 +717,15 @@ def main():
                 continue
 
             residual_pred = error_adapter(base_preds_train)
+            # Adapter residuals can be computed on smoothed or raw targets.
+            if args.adapter_target == "raw":
+                residual_target = y_train - base_preds_train
+            else:
+                residual_target = y_train_s - base_preds_train
+
+            target_desc = "raw" if args.adapter_target == "raw" else "smoothed"
+            pbar.set_description(f"Stage2-Adapter ({target_desc} residual)")
+
             if args.adapter_loss == "rmse":
                 loss = torch.sqrt(mse(residual_pred, residual_target))
             else:
@@ -744,6 +792,15 @@ def main():
 
             residual_target = y_train_s - base_preds_train.detach()
             fit_loss = torch.sqrt(mse(preds_train, y_train_s))
+            # Keep the together-stage residual aligned with the adapter_target selection.
+            if args.adapter_target == "raw":
+                residual_target = y_train - base_preds_train.detach()
+            else:
+                residual_target = y_train_s - base_preds_train.detach()
+
+            target_desc = "raw" if args.adapter_target == "raw" else "smoothed"
+            pbar.set_description(f"Stage3-Together ({target_desc} residual)")
+
             if args.adapter_loss == "rmse":
                 aux_loss = torch.sqrt(mse(residual_pred, residual_target))
             else:
@@ -808,14 +865,15 @@ def main():
         forecast = preds_total[-test_horizon:].detach().cpu().numpy()
 
     preds_total_np = preds_total.detach().cpu().numpy().astype(np.float64)
-    y_true_full = np.concatenate([y_train_raw_np, y_test_np], axis=0)
+    y_train_used_np = y_train_raw_np[:training_num_steps]
+    y_true_full = np.concatenate([y_train_used_np, y_test_np], axis=0)
     if len(y_true_full) != len(preds_total_np):
         raise ValueError(
             f"Length mismatch full truth={len(y_true_full)} vs preds={len(preds_total_np)}. "
             "Expected train + test-window alignment."
         )
 
-    train_metrics = compute_metrics(y_train_raw_np, preds_total_np[:training_num_steps])
+    train_metrics = compute_metrics(y_train_used_np, preds_total_np[:training_num_steps])
     test_metrics = compute_metrics(y_test_np, preds_total_np[training_num_steps:])
     metrics = {
         "asof": args.asof,
@@ -834,6 +892,7 @@ def main():
         "use_adapter": bool(args.use_adapter),
         "adapter_loss": args.adapter_loss,
         "enforce_constraints": bool(enforce_constraints),
+        "adapter_target": args.adapter_target,
         "seed_mode": seed_mode,
         "private_norm": private_norm,
         "train_len": int(training_num_steps),
@@ -890,18 +949,19 @@ def main():
 
     summary_row = pd.DataFrame(
         [
-            {
-                "asof": args.asof,
-                "run_tag": run_tag,
-                "mode": mode,
-                "use_adapter": bool(args.use_adapter),
-                "epochs_gradmeta": epochs_gradmeta,
-                "epochs_adapter": epochs_adapter,
-                "epochs_together": epochs_together,
-                "seed": seed,
-                "train_rmse": train_metrics["rmse"],
-                "train_mae": train_metrics["mae"],
-                "test_rmse": test_metrics["rmse"],
+        {
+            "asof": args.asof,
+            "run_tag": run_tag,
+            "mode": mode,
+            "use_adapter": bool(args.use_adapter),
+            "epochs_gradmeta": epochs_gradmeta,
+            "epochs_adapter": epochs_adapter,
+            "epochs_together": epochs_together,
+            "seed": seed,
+            "adapter_target": args.adapter_target,
+            "train_rmse": train_metrics["rmse"],
+            "train_mae": train_metrics["mae"],
+            "test_rmse": test_metrics["rmse"],
                 "test_mae": test_metrics["mae"],
                 "test_mape": test_metrics["mape"],
             }

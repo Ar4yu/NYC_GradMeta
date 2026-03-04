@@ -1,0 +1,38 @@
+{
+  "asof": "2022-10-15",
+  "mode": "public_opentable",
+  "run_tag": "public_opentable_adapter",
+  "seed": 0,
+  "epochs_gradmeta": 25000,
+  "epochs_adapter": 5000,
+  "epochs_together": 5000,
+  "best_loss_gradmeta": 797.1694946289062,
+  "best_loss_adapter": 1043780.875,
+  "best_loss_together": 753.956787109375,
+  "requested_stage": "all",
+  "stages_ran": [
+    "gradmeta",
+    "adapter",
+    "together"
+  ],
+  "use_private": true,
+  "use_adapter": true,
+  "adapter_loss": "mse",
+  "enforce_constraints": true,
+  "adapter_target": "raw",
+  "seed_mode": "fraction",
+  "private_norm": "zscore_time",
+  "train_len": 109,
+  "test_len": 34,
+  "private_start_idx": 790,
+  "train_metrics": {
+    "rmse": 1102.7927313788687,
+    "mae": 894.1079641919617,
+    "mape": 24.68678335127131
+  },
+  "test_metrics": {
+    "rmse": 17094.082455763724,
+    "mae": 13112.20945111443,
+    "mape": 715.650293669714
+  }
+}

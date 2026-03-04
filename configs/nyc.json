@@ -1,7 +1,7 @@
 {
   "days_head": 28,
   "smooth_window": 7,
-  "num_epochs_diff": 300,
+  "num_epochs_diff": 1000,
   "seed": 0,
   "nyc": {
     "disease": "nyc",
@@ -10,10 +10,20 @@
     "train_days_base": 7,
     "test_days": 28,
 
-    "learning_rate": 0.0005,
+    "learning_rate": 0.001,
+    "adapter_learning_rate": 0.001,
+    "together_learning_rate": 0.0005,
     "weight_decay": 0.0,
 
     "num_pub_features": 10,
+
+    "seed_min": 0.0,
+    "seed_max": 10.0,
+    "beta_min": 0.0,
+    "beta_max": 2.0,
+    "seed_mode": "fraction",
+    "private_norm": "zscore_time",
+    "enforce_constraints": true,
 
     "paths": {
       "master_daily_csv": "data/processed/nyc_master_daily.csv",
@@ -27,17 +37,20 @@
     "target_source_column": "total_cases",
 
     "public_feature_mode": "all_public",
-
     "exclude_public_columns": [],
 
     "param_ranges": {
-      "kappa":   [0.05, 0.90],
-      "symprob": [0.05, 0.95],
-      "epsilon": [0.05, 0.90],
-      "alpha":   [0.05, 0.90],
-      "gamma":   [0.02, 0.50],
-      "delta":   [0.01, 0.30],
-      "mor":     [0.0001, 0.02]
-    }
+      "kappa":   [0.0, 1.0],
+      "symprob": [0.0, 1.0],
+      "epsilon": [0.0, 1.0],
+      "alpha":   [0.0, 1.0],
+      "gamma":   [0.01, 0.6],
+      "delta":   [0.0, 0.5],
+      "mor":     [0.0, 0.06]
+    },
+
+    "epochs_gradmeta": 5000,
+    "epochs_adapter": 1000,
+    "epochs_together": 1000
   }
 }
