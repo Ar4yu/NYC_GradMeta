@@ -1,0 +1,42 @@
+{
+  "asof": "2022-10-15",
+  "mode": "public_only",
+  "run_tag": "public_only_adapter_w7",
+  "target_name": "cases",
+  "smooth_cases_window": 7,
+  "window_days": 170,
+  "target_definition": "causal 7-day moving-average cases",
+  "seed": 0,
+  "epochs_gradmeta": 25000,
+  "epochs_adapter": 5000,
+  "epochs_together": 5000,
+  "best_loss_gradmeta": 506.4576721191406,
+  "best_loss_adapter": 219550.796875,
+  "best_loss_together": 468.56011962890625,
+  "requested_stage": "all",
+  "stages_ran": [
+    "gradmeta",
+    "adapter",
+    "together"
+  ],
+  "use_private": false,
+  "use_adapter": true,
+  "adapter_loss": "mse",
+  "enforce_constraints": true,
+  "adapter_target": "smoothed",
+  "seed_mode": "fraction",
+  "private_norm": "zscore_time",
+  "train_len": 142,
+  "test_len": 28,
+  "private_start_idx": 0,
+  "train_metrics": {
+    "rmse": 608.926708104694,
+    "mae": 451.7150517853213,
+    "mape": 14.235066777928285
+  },
+  "test_metrics": {
+    "rmse": 553.1389952656488,
+    "mae": 547.3369402204241,
+    "mape": 27.047252658408517
+  }
+}

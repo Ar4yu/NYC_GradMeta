@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def series_to_supervised(data, n_in=1, n_out=1, dropnan=True):
     n_vars = 1 if type(data) is list else data.shape[1]
     df = pd.DataFrame(data)
@@ -21,3 +22,14 @@ def series_to_supervised(data, n_in=1, n_out=1, dropnan=True):
     if dropnan:
         agg.dropna(inplace=True)
     return agg
+
+
+def smoothing_label(smooth_cases_window: int) -> str:
+    window = int(smooth_cases_window)
+    if window <= 0:
+        return "raw daily cases"
+    return f"causal {window}-day moving-average cases"
+
+
+def online_artifact_stem(split: str, asof: str, window_days: int, smooth_cases_window: int) -> str:
+    return f"{split}_{asof}_history{int(window_days)}_w{int(smooth_cases_window)}"

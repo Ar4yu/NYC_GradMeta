@@ -40,6 +40,8 @@ STAGE="${STAGE:-all}"
 USE_ADAPTER="${USE_ADAPTER:-0}"
 LONG_TRAIN="${LONG_TRAIN:-0}"
 CLIP_NORM="${CLIP_NORM:-}"
+SMOOTH_CASES_WINDOW="${SMOOTH_CASES_WINDOW:-0}"
+WINDOW_DAYS="${WINDOW_DAYS:-170}"
 if [ -x ".venv/bin/python" ]; then
   PYTHON="${PYTHON:-.venv/bin/python}"
 else
@@ -52,13 +54,25 @@ if [[ "$SKIP_PREP" -eq 0 ]]; then
   echo "==> Step 1: build processed public datasets"
   ./scripts/build_data.sh
   echo "==> Step 2: prepare online train/test CSVs"
-  "$PYTHON" scripts/prepare_online_nyc.py --config "${CFG}" --asof "${ASOF}"
+  "$PYTHON" scripts/prepare_online_nyc.py \
+    --config "${CFG}" \
+    --asof "${ASOF}" \
+    --window_days "${WINDOW_DAYS}" \
+    --smooth_cases_window "${SMOOTH_CASES_WINDOW}"
 else
   echo "==> Skipping prep steps (build_data/prepare_online)"
 fi
 
 echo "==> Step 3: staged train + forecast (no private OpenTable)"
-TRAIN_ARGS=( -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "${CFG}" --asof "${ASOF}" --no_private --stage "${STAGE}" )
+TRAIN_ARGS=(
+  -m nyc_gradmeta.models.forecasting_gradmeta_nyc
+  --config "${CFG}"
+  --asof "${ASOF}"
+  --no_private
+  --stage "${STAGE}"
+  --window_days "${WINDOW_DAYS}"
+  --smooth_cases_window "${SMOOTH_CASES_WINDOW}"
+)
 if [ "${USE_ADAPTER}" = "1" ]; then
   TRAIN_ARGS+=( --use_adapter )
 fi

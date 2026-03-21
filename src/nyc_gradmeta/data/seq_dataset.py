@@ -18,6 +18,7 @@ class SeqDataset(Dataset):
         date_col: str = "date",
         keep_date: bool = False,
         num_pub_features: int | None = None,
+        exclude_feature_columns: list[str] | None = None,
     ):
         df = pd.read_csv(csv_file)
 
@@ -35,7 +36,12 @@ class SeqDataset(Dataset):
             raise ValueError(f"Target column '{target_name}' contains NaNs in {csv_file}.")
 
         y = df[target_name].to_numpy(dtype=np.float32)
-        X_df = df.drop(columns=[target_name])
+        excluded = {"cases", "cases_raw"}
+        excluded.update(exclude_feature_columns or [])
+        feature_cols = [col for col in df.columns if col not in excluded]
+        if len(feature_cols) == 0:
+            raise ValueError(f"No feature columns left after exclusions in {csv_file}.")
+        X_df = df[feature_cols]
         if X_df.isna().any().any():
             raise ValueError(f"Feature columns contain NaNs in {csv_file}.")
         if num_pub_features is not None and X_df.shape[1] != int(num_pub_features):
@@ -43,6 +49,11 @@ class SeqDataset(Dataset):
                 f"Expected exactly {num_pub_features} public covariates in {csv_file}, found {X_df.shape[1]}."
             )
         X = X_df.to_numpy(dtype=np.float32)
+        self.feature_cols = feature_cols
+        self.target_name = target_name
+        self.cases_raw = None
+        if "cases_raw" in df.columns:
+            self.cases_raw = torch.from_numpy(df["cases_raw"].to_numpy(dtype=np.float32))
 
         # store as tensors
         self.X = torch.from_numpy(X)  # [T, F]

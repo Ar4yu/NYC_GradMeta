@@ -4,6 +4,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+from nyc_gradmeta.utils import online_artifact_stem
+
 
 def compute_mobility_index(df: pd.DataFrame) -> pd.Series:
     mob_cols = [c for c in df.columns if c.startswith("mob_")]
@@ -82,6 +84,13 @@ def main():
     ap.add_argument("--config", default="configs/nyc.json")
     ap.add_argument("--asof", required=True, help="YYYY-MM-DD. Test window ends on this date (inclusive).")
     ap.add_argument(
+        "--smooth_cases_window",
+        type=int,
+        choices=[0, 3, 7],
+        default=0,
+        help="Apply a causal rolling mean to the target-only cases series. 0 disables smoothing.",
+    )
+    ap.add_argument(
         "--split_mode",
         choices=["horizon", "ratio"],
         default="horizon",
@@ -102,8 +111,8 @@ def main():
     ap.add_argument(
         "--window_days",
         type=int,
-        default=None,
-        help="Optional: use only the last N days up to ASOF before splitting (e.g., 365).",
+        default=170,
+        help="Use only the last N days up to ASOF before splitting. Defaults to 170 to match OpenTable coverage.",
     )
     args = ap.parse_args()
 
@@ -127,11 +136,17 @@ def main():
     if not (diffs == 1).all():
         raise ValueError("master_daily_csv must be daily contiguous with no missing dates.")
 
-    # Build target column "cases" from configured source column
+    # Build target columns from configured source column.
     src = nyc.get("target_source_column", "total_cases")
     if src not in df.columns:
         raise ValueError(f"Configured target_source_column '{src}' not found in master_daily_csv columns.")
-    df["cases"] = parse_numeric_column(df[src], src)
+    df["cases_raw"] = parse_numeric_column(df[src], src).astype(float)
+    if args.smooth_cases_window > 0:
+        df["cases"] = (
+            df["cases_raw"].rolling(window=args.smooth_cases_window, min_periods=1).mean().astype(float)
+        )
+    else:
+        df["cases"] = df["cases_raw"].astype(float)
 
     mode = nyc.get("public_feature_mode", "all_public")
     feature_df, mapping = build_public_features(
@@ -139,9 +154,15 @@ def main():
         mode=mode,
         target_col="cases",
         target_source_col=src,
-        exclude_public_columns=nyc.get("exclude_public_columns", []),
+        exclude_public_columns=(nyc.get("exclude_public_columns", []) + ["cases_raw", "date"]),
     )
-    out = pd.concat([df[["cases"]].astype(float).reset_index(drop=True), feature_df.reset_index(drop=True)], axis=1)
+    out = pd.concat(
+        [
+            df[["cases_raw", "cases"]].astype(float).reset_index(drop=True),
+            feature_df.reset_index(drop=True),
+        ],
+        axis=1,
+    )
     if out.isna().any().any():
         raise ValueError("Prepared online dataframe contains NaNs.")
 
@@ -161,12 +182,11 @@ def main():
     if not (diffs_upto == 1).all():
         raise ValueError("Rows up to asof are not daily contiguous.")
 
-    if args.window_days is not None:
-        if args.window_days < 2:
-            raise ValueError("--window_days must be >= 2.")
-        start_idx = max(0, len(out_upto) - int(args.window_days))
-        out_upto = out_upto.iloc[start_idx:].reset_index(drop=True)
-        dates_upto = dates_upto.iloc[start_idx:].reset_index(drop=True)
+    if args.window_days < 2:
+        raise ValueError("--window_days must be >= 2.")
+    start_idx = max(0, len(out_upto) - int(args.window_days))
+    out_upto = out_upto.iloc[start_idx:].reset_index(drop=True)
+    dates_upto = dates_upto.iloc[start_idx:].reset_index(drop=True)
     if len(out_upto) < 2:
         raise ValueError("Need at least 2 rows after ASOF/window filtering to split train/test.")
 
@@ -186,6 +206,7 @@ def main():
             "test_days": test_days,
             "train_days": int(len(train_df)),
             "window_days": args.window_days,
+            "smooth_cases_window": int(args.smooth_cases_window),
             "asof": args.asof,
         }
     else:
@@ -203,17 +224,22 @@ def main():
             "train_days": int(len(train_df)),
             "test_days": int(len(test_df)),
             "window_days": args.window_days,
+            "smooth_cases_window": int(args.smooth_cases_window),
             "asof": args.asof,
         }
 
     # Save
-    train_path = online_dir / f"train_{args.asof}.csv"
-    test_path = online_dir / f"test_{args.asof}.csv"
+    suffix_train = online_artifact_stem("train", args.asof, args.window_days, args.smooth_cases_window)
+    suffix_test = online_artifact_stem("test", args.asof, args.window_days, args.smooth_cases_window)
+    train_path = online_dir / f"{suffix_train}.csv"
+    test_path = online_dir / f"{suffix_test}.csv"
     train_df.to_csv(train_path, index=False)
     test_df.to_csv(test_path, index=False)
-    map_path = online_dir / f"public_feature_map_{args.asof}.csv"
+    map_suffix = online_artifact_stem("public_feature_map", args.asof, args.window_days, args.smooth_cases_window)
+    map_path = online_dir / f"{map_suffix}.csv"
     pd.DataFrame(mapping, columns=["pub_col", "source_col"]).to_csv(map_path, index=False)
-    split_path = online_dir / f"split_info_{args.asof}.json"
+    split_suffix = online_artifact_stem("split_info", args.asof, args.window_days, args.smooth_cases_window)
+    split_path = online_dir / f"{split_suffix}.json"
     with open(split_path, "w", encoding="utf-8") as f:
         json.dump(split_info, f, indent=2)
 
@@ -223,7 +249,8 @@ def main():
     print(f"  {map_path}    (rows={len(mapping)})")
     print(f"  {split_path}")
     print("Columns:", list(train_df.columns))
-    print("Num public features:", train_df.shape[1] - 1, f"(mode={mode})")
+    print("Num public features:", train_df.shape[1] - 2, f"(mode={mode})")
+    print("Cases target:", "cases", f"({args.smooth_cases_window}-day causal rolling mean)" if args.smooth_cases_window else "(raw)")
     print("Split info:", split_info)
 
 

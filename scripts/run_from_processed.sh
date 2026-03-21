@@ -27,6 +27,8 @@ STAGE="${STAGE:-all}"
 USE_ADAPTER="${USE_ADAPTER:-1}"
 LONG_TRAIN="${LONG_TRAIN:-0}"
 CLIP_NORM="${CLIP_NORM:-}"
+SMOOTH_CASES_WINDOW="${SMOOTH_CASES_WINDOW:-0}"
+WINDOW_DAYS="${WINDOW_DAYS:-170}"
 NO_PRIVATE=""
 EXTRA_ARGS=()
 MODE="master_opentable"
@@ -42,7 +44,14 @@ done
 CFG="configs/nyc.json"
 
 echo "==> Training + saving model (ASOF=${ASOF}, mode=${MODE})"
-TRAIN_ARGS=( -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "${CFG}" --asof "${ASOF}" --stage "${STAGE}" )
+TRAIN_ARGS=(
+  -m nyc_gradmeta.models.forecasting_gradmeta_nyc
+  --config "${CFG}"
+  --asof "${ASOF}"
+  --stage "${STAGE}"
+  --smooth_cases_window "${SMOOTH_CASES_WINDOW}"
+  --window_days "${WINDOW_DAYS}"
+)
 if [ -n "${NO_PRIVATE}" ]; then
   TRAIN_ARGS+=( "${NO_PRIVATE}" )
 fi
@@ -64,7 +73,9 @@ echo "==> Saving visualization"
 MPLCONFIGDIR="${MPLCONFIGDIR:-.venv/mplconfig}" "$PYTHON" -m nyc_gradmeta.visualization \
   --asof "${ASOF}" \
   --config "${CFG}" \
-  --mode "${MODE}"
+  --mode "${MODE}" \
+  --smooth_cases_window "${SMOOTH_CASES_WINDOW}" \
+  --window_days "${WINDOW_DAYS}"
 
 echo "Done. Forecast and models: outputs/nyc/${ASOF}/"
-echo "Plot: results/nyc_forecast_${MODE}_${ASOF}.png"
+echo "Plot: outputs/nyc/${ASOF}/forecast_vs_truth_${MODE}_w${SMOOTH_CASES_WINDOW}.png"

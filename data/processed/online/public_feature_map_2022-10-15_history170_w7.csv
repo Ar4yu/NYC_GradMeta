@@ -1,0 +1,11 @@
+pub_col,source_col
+pub_0,probable_cases
+pub_1,hospitalizations
+pub_2,deaths
+pub_3,mob_retail
+pub_4,mob_grocery
+pub_5,mob_parks
+pub_6,mob_transit
+pub_7,mob_work
+pub_8,mob_residential
+pub_9,trend_covid_topic

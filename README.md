@@ -25,12 +25,24 @@ chmod +x scripts/*.sh
 ```bash
 conda create -n nyc-gradmeta python=3.10
 conda activate nyc-gradmeta
-conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+conda install pytorch torchvision torchaudio pytorch-cuda=12.8 -c pytorch -c nvidia
 pip install -e .
 chmod +x scripts/*.sh
 ```
 
 Inside that environment PyTorch will see the GPU automatically (`torch.cuda.is_available()` returns `True`). Set `CUDA_VISIBLE_DEVICES=0` or similar before running if you need to pin a specific card. All scripts still use the same CLI; just activate the conda env before invoking them.
+
+- **Linux RTX 5090 / Blackwell option**: the repo also includes a pip/venv helper that targets official CUDA 12.8 wheels and runs a quick GPU smoke check:
+
+```bash
+chmod +x scripts/setup_linux_5090.sh
+./scripts/setup_linux_5090.sh
+source .venv-5090/bin/activate
+python scripts/check_gpu_env.py
+```
+
+- If a lab machine reports unsupported `sm_120`, the usual fix is to upgrade PyTorch/CUDA wheels first rather than changing repo code.
+- If you later add any custom CUDA extensions on the lab machines, rebuild them with `TORCH_CUDA_ARCH_LIST=12.0`.
 
 </details>
 
@@ -66,9 +78,9 @@ This recreates `data/processed/nyc_master_daily.csv`, the online `train/test` CS
 
 ### Generated artifacts per ASOF
 
-- `data/processed/online/train_<ASOF>.csv` / `test_<ASOF>.csv`: final public covariates + target (`cases` column removed from features). `SeqDataset` loads them directly.
-- `data/processed/online/public_feature_map_<ASOF>.csv`: column order reference for your thesis methods section.
-- `data/processed/online/split_info_<ASOF>.json`: reproducible split metadata (train/test lengths + window mode).
+- `data/processed/online/train_<ASOF>_history<WINDOW_DAYS>_w<W>.csv` / `test_<ASOF>_history<WINDOW_DAYS>_w<W>.csv`: final public covariates + targets. These files contain `cases_raw`, `cases`, and `pub_0...`; `SeqDataset` uses `cases` by default and excludes both case columns from features.
+- `data/processed/online/public_feature_map_<ASOF>_history<WINDOW_DAYS>_w<W>.csv`: column order reference for your thesis methods section.
+- `data/processed/online/split_info_<ASOF>_history<WINDOW_DAYS>_w<W>.json`: reproducible split metadata (train/test lengths + window mode).
 - `data/processed/private/opentable_private_lap_<ASOF>.pt`: `[16, T]` tensor; `align_private_tensor` handles right alignment + normalization.
 
 ### External source data for the new NYC baseline
@@ -84,12 +96,24 @@ Collect each dataset in `data/processed` before running the pipeline, keep notes
 ### Build commands (run before staging, example ASOF=2022-10-15)
 
 ```bash
-.venv/bin/python scripts/prepare_online_nyc.py --asof 2022-10-15 --config configs/nyc.json
+.venv/bin/python scripts/prepare_online_nyc.py --asof 2022-10-15 --config configs/nyc.json --window_days 170 --smooth_cases_window 0
 .venv/bin/python scripts/build_private_opentable_tensor.py \
   --asof 2022-10-15 \
   --opentable_csv data/processed/opentable_yoy_daily.csv \
   --opentable_col yoy_seated_diner \
   --config configs/nyc.json
+```
+
+### Smoothing cases
+
+- `--smooth_cases_window` accepts `0`, `3`, or `7`.
+- Smoothing is applied only in `scripts/prepare_online_nyc.py`, only to the target series, and uses a causal rolling mean with `rolling(window=W, min_periods=1).mean()`.
+- Mobility, trends, and OpenTable are never smoothed.
+- `cases_raw` stores the original daily confirmed counts; `cases` stores the target actually used by training, evaluation, plots, and saved forecasts.
+
+```bash
+.venv/bin/python scripts/prepare_online_nyc.py --config configs/nyc.json --asof 2022-10-15 --window_days 170 --smooth_cases_window 3
+.venv/bin/python -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config configs/nyc.json --asof 2022-10-15 --window_days 170 --smooth_cases_window 3 --epochs 1 --self_check
 ```
 
 The scripts also write:
@@ -192,11 +216,11 @@ STAGE=adapter ./scripts/run_from_processed.sh 2022-10-15 --epochs 50
 Runs write into `outputs/nyc/<ASOF>/` (matching `run_tag`). Files:
 
 - `param_model.pt`, `error_adapter.pt` (if adapter stage ran).
-- `forecast_<N>d(.csv/.npy)` _and_ `forecast_<N>d_<run_tag>.csv/.npy` (plus `forecast_28d` aliases when `N=28`).
+- `forecast_<N>d_w<W>.csv/.npy` _and_ `forecast_<N>d_w<W>_<run_tag>.csv/.npy`.
 - `fit_train_test_<run_tag>.csv` _and_ `.png` (unless `--minimal_outputs`).
 - `metrics_<run_tag>.json` and `metrics_summary.csv` (appended each run; use for thesis tables).`metrics_summary.csv` is the canonical comparison table with RMSE/MAE/MAPE/seed info.
 
-Logs print stage progress and warnings if predictions exceed 1e7 (blow-up guard). Always verify the PNG at `outputs/nyc/<ASOF>/fit_train_test_<run_tag>.png` before writing your thesis figures.
+Logs print stage progress and warnings if predictions exceed 1e7 (blow-up guard). Always verify the PNG at `outputs/nyc/<ASOF>/fit_train_test_<run_tag>.png` before writing your thesis figures. Forecast CSVs now include `day_idx`, `pred_cases`, `smooth_cases_window`, and `truth_cases`.
 
 </details>
 
@@ -229,11 +253,11 @@ Logs print stage progress and warnings if predictions exceed 1e7 (blow-up guard)
 | -------------------------------------------------------- | ------ | ------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `data/processed/nyc_master_daily.csv`                    | 960    | 13      | Combined cases, hospitalizations, deaths, mobility indexes, scope trends, and `total_cases`. | `scripts/build_data.sh`                                           |
 | `data/processed/opentable_yoy_daily.csv`                 | 170    | 2       | OpenTable YoY diners (date + `yoy_seated_diner`).                                            | `scripts/build_private_opentable_tensor.py` (preprocessing steps) |
-| `data/processed/online/train_<ASOF>.csv`                 | ~932   | 11      | Train window: `cases` + `pub_0`…`pub_9`.                                                     | `scripts/prepare_online_nyc.py`                                   |
-| `data/processed/online/test_<ASOF>.csv`                  | 28     | 11      | Test window, same schema as train.                                                           | `scripts/prepare_online_nyc.py`                                   |
+| `data/processed/online/train_<ASOF>_history<WINDOW_DAYS>_w<W>.csv` | ~142   | 12      | Train window: `cases_raw`, `cases`, and `pub_0`…`pub_9` (history defaults to 170 days).     | `scripts/prepare_online_nyc.py`                                   |
+| `data/processed/online/test_<ASOF>_history<WINDOW_DAYS>_w<W>.csv`  | 28     | 12      | Test window, same schema as train.                                                           | `scripts/prepare_online_nyc.py`                                   |
 | `data/processed/private/opentable_private_lap_<ASOF>.pt` | 16 × T |         | Per-patch OpenTable tensor, zero-padded + normalized (`align_private_tensor`).               | `scripts/build_private_opentable_tensor.py`                       |
 
-- `scripts/prepare_online_nyc.py` extracts numeric public covariates, enforces `num_pub_features`, and drops the `cases` target column before writing `train_/test_` splits and metadata (`split_info`, `public_feature_map`).
+- `scripts/prepare_online_nyc.py` extracts numeric public covariates, writes both `cases_raw` and `cases`, and `SeqDataset` excludes both case columns before building model features.
 - `align_private_tensor` in `src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py` right-aligns the loaded tensor, pads to match `[train + test]`, and applies `private_norm` (`zscore_time` by default).
 - `scripts/build_private_opentable_tensor.py` also prints the tensor shape/date range; the final `.pt` is `[16, T]` and loaded via `torch.load` (see training script lines referencing `private_dir`).
 

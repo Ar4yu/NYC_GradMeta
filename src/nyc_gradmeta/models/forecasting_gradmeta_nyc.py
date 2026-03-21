@@ -29,9 +29,8 @@ from nyc_gradmeta.sim.model_utils import (
     CalibNNTwoEncoderThreeOutputs,
     ErrorCorrectionAdapter,
     MetapopulationSEIRMBeta,
-    moving_average,
 )
-from nyc_gradmeta.utils import series_to_supervised
+from nyc_gradmeta.utils import online_artifact_stem, series_to_supervised, smoothing_label
 
 
 PARAM_ORDER = ("kappa", "symprob", "epsilon", "alpha", "gamma", "delta", "mor")
@@ -261,11 +260,12 @@ def save_fit_plot(
     y_pred_full: np.ndarray,
     split_idx: int,
     title: str,
+    truth_label: str,
 ) -> None:
     x = np.arange(len(y_true_full))
     plt.figure(figsize=(12, 5))
-    plt.plot(x, y_true_full, label="True cases", color="black", linewidth=1.7)
-    plt.plot(x, y_pred_full, label="Predicted cases", color="tab:blue", linewidth=1.7)
+    plt.plot(x, y_true_full, label=f"Truth ({truth_label})", color="black", linewidth=1.7)
+    plt.plot(x, y_pred_full, label=f"Predicted ({truth_label})", color="tab:blue", linewidth=1.7)
     plt.axvline(split_idx - 0.5, color="tab:red", linestyle="--", linewidth=1.5, label="Train/Test split")
     plt.xlabel("Day index")
     plt.ylabel("Daily cases")
@@ -364,6 +364,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/nyc.json")
     ap.add_argument("--asof", required=True, help="YYYY-MM-DD used in filenames train/test/private.")
+    ap.add_argument(
+        "--smooth_cases_window",
+        type=int,
+        choices=[0, 3, 7],
+        default=0,
+        help="Select the prepared target series: raw (0) or causal moving-average cases (3 or 7).",
+    )
+    ap.add_argument(
+        "--window_days",
+        type=int,
+        default=170,
+        help="Prepared public-history length used in the train/test artifact names. Defaults to 170.",
+    )
     ap.add_argument("--week", type=int, default=8, help="Training weeks multiplier (train_days = train_days_base * week).")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--epochs", type=int, default=None, help="Backward-compatible base epochs used when stage-specific epochs are not set.")
@@ -459,14 +472,16 @@ def main():
     num_patch = int(nyc["num_patch"])
     online_dir = Path(nyc["paths"]["online_dir"])
     private_dir = Path(nyc["paths"]["private_dir"])
-    train_csv = online_dir / f"train_{args.asof}.csv"
-    test_csv = online_dir / f"test_{args.asof}.csv"
+    target_name = "cases" if args.main_target == "smoothed" else "cases_raw"
+    smoothing_desc = smoothing_label(args.smooth_cases_window)
+    train_csv = online_dir / f"{online_artifact_stem('train', args.asof, args.window_days, args.smooth_cases_window)}.csv"
+    test_csv = online_dir / f"{online_artifact_stem('test', args.asof, args.window_days, args.smooth_cases_window)}.csv"
     private_pt = private_dir / f"opentable_private_lap_{args.asof}.pt"
     out_dir = Path("outputs") / "nyc" / args.asof
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    train_dataset = SeqDataset(str(train_csv), nyc["target_name"])
-    test_dataset = SeqDataset(str(test_csv), nyc["target_name"])
+    train_dataset = SeqDataset(str(train_csv), target_name)
+    test_dataset = SeqDataset(str(test_csv), target_name)
     train_steps_expected = int(train_dataset.X.shape[0])
     test_steps_expected = int(test_dataset.X.shape[0])
     num_pub_features = int(train_dataset.X.shape[1])
@@ -484,7 +499,7 @@ def main():
 
     use_private = not args.no_private
     mode = "public_opentable" if use_private else "public_only"
-    run_tag = f"{mode}{'_adapter' if args.use_adapter else ''}"
+    run_tag = f"{mode}{'_adapter' if args.use_adapter else ''}_w{args.smooth_cases_window}"
     private_full = None
     if use_private:
         if not private_pt.exists():
@@ -534,9 +549,26 @@ def main():
     together_lr = float(nyc.get("together_learning_rate", lr))
 
     base_epochs = int(args.epochs) if args.epochs is not None else int(cfg.get("num_epochs_diff", 300))
-    epochs_gradmeta = int(args.epochs_gradmeta) if args.epochs_gradmeta is not None else int(nyc.get("epochs_gradmeta", base_epochs))
-    epochs_adapter = int(args.epochs_adapter) if args.epochs_adapter is not None else int(nyc.get("epochs_adapter", base_epochs))
-    epochs_together = int(args.epochs_together) if args.epochs_together is not None else int(nyc.get("epochs_together", base_epochs))
+    if args.epochs_gradmeta is not None:
+        epochs_gradmeta = int(args.epochs_gradmeta)
+    elif args.epochs is not None:
+        epochs_gradmeta = base_epochs
+    else:
+        epochs_gradmeta = int(nyc.get("epochs_gradmeta", base_epochs))
+
+    if args.epochs_adapter is not None:
+        epochs_adapter = int(args.epochs_adapter)
+    elif args.epochs is not None:
+        epochs_adapter = base_epochs
+    else:
+        epochs_adapter = int(nyc.get("epochs_adapter", base_epochs))
+
+    if args.epochs_together is not None:
+        epochs_together = int(args.epochs_together)
+    elif args.epochs is not None:
+        epochs_together = base_epochs
+    else:
+        epochs_together = int(nyc.get("epochs_together", base_epochs))
 
     if args.long_train:
         long_mult = 5
@@ -561,8 +593,9 @@ def main():
     X_train = X_train_b.squeeze(0).to(device)
     y_train = y_train_b.squeeze(0).to(device)
     training_num_steps_full = int(y_train.shape[0])
-    y_train_raw_np = y_train.detach().cpu().numpy().astype(np.float64)
-    y_train_raw_tensor = y_train.clone()
+    y_train_target_np = y_train.detach().cpu().numpy().astype(np.float64)
+    y_train_target_tensor = y_train.clone()
+    y_train_raw_tensor = train_dataset.cases_raw.to(device) if train_dataset.cases_raw is not None else y_train.clone()
 
     private_train = align_private_tensor(
         private_full,
@@ -573,40 +606,40 @@ def main():
         private_norm=private_norm,
     )
 
-    y_np = y_train.detach().cpu().numpy().copy()
-    k = min(training_num_steps_full, train_days)
-    if k > 0:
-        y_np[:k] = moving_average(y_np[:k], int(cfg["smooth_window"]))
-    y_train_s = torch.tensor(y_np, dtype=torch.float32, device=device)
-
     val_len = min(28, max(0, int(training_num_steps_full * args.val_split)))
     train_len = max(1, training_num_steps_full - val_len)
     use_val = val_len > 0 and not args.no_early_stop
 
     X_train_full = X_train
+    y_train_target_full = y_train_target_tensor
     y_train_raw_full = y_train_raw_tensor
-    y_train_s_full = y_train_s
     private_full_tensor = private_train
 
     if val_len > 0:
         X_train = X_train_full[:train_len]
-        y_train = y_train_raw_full[:train_len]
-        y_train_s = y_train_s_full[:train_len]
+        y_train = y_train_target_full[:train_len]
+        y_train_raw = y_train_raw_full[:train_len]
         private_train = private_full_tensor[:, :train_len, :]
         X_val = X_train_full[train_len : train_len + val_len]
-        y_val = y_train_raw_full[train_len : train_len + val_len]
-        y_val_s = y_train_s_full[train_len : train_len + val_len]
+        y_val = y_train_target_full[train_len : train_len + val_len]
+        y_val_raw = y_train_raw_full[train_len : train_len + val_len]
         private_val = private_full_tensor[:, train_len : train_len + val_len, :]
     else:
         X_val = torch.zeros_like(X_train_full[:0])
-        y_val = torch.zeros_like(y_train_raw_full[:0])
-        y_val_s = torch.zeros_like(y_train_s_full[:0])
+        y_train_raw = y_train_raw_full
+        y_val = torch.zeros_like(y_train_target_full[:0])
+        y_val_raw = torch.zeros_like(y_train_raw_full[:0])
         private_val = private_full_tensor[:, :0, :]
 
     training_num_steps = X_train.shape[0]
 
     _, y_test_t = test_dataset[0]
     y_test_np = y_test_t.detach().cpu().numpy().astype(np.float64)
+    y_test_raw_np = (
+        test_dataset.cases_raw.detach().cpu().numpy().astype(np.float64)
+        if test_dataset.cases_raw is not None
+        else y_test_np.copy()
+    )
     test_horizon = int(len(y_test_np))
     if test_horizon < 1:
         raise ValueError(f"Test dataset is empty: {test_csv}")
@@ -644,7 +677,7 @@ def main():
                 param_model=param_model,
                 private_data=private_train,
                 public_X=X_train,
-                public_y=y_train_s,
+                public_y=y_train,
                 device=device,
             )
             assert_model_outputs(params_epi_weekly, seed_status, adjustment_matrix, num_patch)
@@ -662,7 +695,7 @@ def main():
             if _warn_blow_up(base_preds_train, "Stage1-GradMeta"):
                 continue
 
-            loss = torch.sqrt(mse(base_preds_train, y_train_s))
+            loss = torch.sqrt(mse(base_preds_train, y_train))
             opt_gradmeta.zero_grad()
             loss.backward()
             if args.clip_norm is not None and args.clip_norm > 0:
@@ -696,7 +729,7 @@ def main():
                     param_model=param_model,
                     private_data=private_train,
                     public_X=X_train,
-                    public_y=y_train_s,
+                    public_y=y_train,
                     device=device,
                 )
                 assert_model_outputs(params_epi_weekly, seed_status, adjustment_matrix, num_patch)
@@ -711,7 +744,7 @@ def main():
                     param_mins=param_mins,
                     param_maxs=param_maxs,
                 )
-                residual_target = y_train_s - base_preds_train
+                residual_target = y_train - base_preds_train
 
             if _warn_blow_up(base_preds_train, "Stage2-Adapter"):
                 continue
@@ -719,9 +752,9 @@ def main():
             residual_pred = error_adapter(base_preds_train)
             # Adapter residuals can be computed on smoothed or raw targets.
             if args.adapter_target == "raw":
-                residual_target = y_train - base_preds_train
+                residual_target = y_train_raw - base_preds_train
             else:
-                residual_target = y_train_s - base_preds_train
+                residual_target = y_train - base_preds_train
 
             target_desc = "raw" if args.adapter_target == "raw" else "smoothed"
             pbar.set_description(f"Stage2-Adapter ({target_desc} residual)")
@@ -770,7 +803,7 @@ def main():
                 param_model=param_model,
                 private_data=private_train,
                 public_X=X_train,
-                public_y=y_train_s,
+                public_y=y_train,
                 device=device,
             )
             assert_model_outputs(params_epi_weekly, seed_status, adjustment_matrix, num_patch)
@@ -790,13 +823,13 @@ def main():
             if _warn_blow_up(preds_train, "Stage3-Together"):
                 continue
 
-            residual_target = y_train_s - base_preds_train.detach()
-            fit_loss = torch.sqrt(mse(preds_train, y_train_s))
+            residual_target = y_train - base_preds_train.detach()
+            fit_loss = torch.sqrt(mse(preds_train, y_train))
             # Keep the together-stage residual aligned with the adapter_target selection.
             if args.adapter_target == "raw":
-                residual_target = y_train - base_preds_train.detach()
+                residual_target = y_train_raw - base_preds_train.detach()
             else:
-                residual_target = y_train_s - base_preds_train.detach()
+                residual_target = y_train - base_preds_train.detach()
 
             target_desc = "raw" if args.adapter_target == "raw" else "smoothed"
             pbar.set_description(f"Stage3-Together ({target_desc} residual)")
@@ -842,7 +875,7 @@ def main():
             param_model=param_model,
             private_data=private_train,
             public_X=X_train,
-            public_y=y_train_s,
+            public_y=y_train,
             device=device,
         )
         assert_model_outputs(params_epi_weekly, seed_status, adjustment_matrix, num_patch)
@@ -865,7 +898,7 @@ def main():
         forecast = preds_total[-test_horizon:].detach().cpu().numpy()
 
     preds_total_np = preds_total.detach().cpu().numpy().astype(np.float64)
-    y_train_used_np = y_train_raw_np[:training_num_steps]
+    y_train_used_np = y_train_target_np[:training_num_steps]
     y_true_full = np.concatenate([y_train_used_np, y_test_np], axis=0)
     if len(y_true_full) != len(preds_total_np):
         raise ValueError(
@@ -879,6 +912,10 @@ def main():
         "asof": args.asof,
         "mode": mode,
         "run_tag": run_tag,
+        "target_name": target_name,
+        "smooth_cases_window": int(args.smooth_cases_window),
+        "window_days": int(args.window_days),
+        "target_definition": smoothing_desc,
         "seed": seed,
         "epochs_gradmeta": epochs_gradmeta,
         "epochs_adapter": epochs_adapter,
@@ -903,34 +940,31 @@ def main():
     }
 
     forecast_days = int(test_horizon)
-    # Minimal mode: keep only run_tag-specific forecasts; skip legacy duplicates and plots.
+    forecast_df = pd.DataFrame(
+        {
+            "day_idx": np.arange(forecast_days, dtype=int),
+            "pred_cases": forecast,
+            "smooth_cases_window": np.full(forecast_days, int(args.smooth_cases_window), dtype=int),
+            "truth_cases": y_test_np,
+        }
+    )
+    forecast_base = f"forecast_{forecast_days}d_w{args.smooth_cases_window}"
     if args.minimal_outputs:
-        np.save(out_dir / f"forecast_{forecast_days}d_{run_tag}.npy", forecast)
-        pd.DataFrame({"pred_cases": forecast}).to_csv(
-            out_dir / f"forecast_{forecast_days}d_{run_tag}.csv", index=False
-        )
+        np.save(out_dir / f"{forecast_base}_{run_tag}.npy", forecast)
+        forecast_df.to_csv(out_dir / f"{forecast_base}_{run_tag}.csv", index=False)
     else:
-        np.save(out_dir / f"forecast_{forecast_days}d.npy", forecast)
-        pd.DataFrame({"pred_cases": forecast}).to_csv(out_dir / f"forecast_{forecast_days}d.csv", index=False)
-        np.save(out_dir / f"forecast_{forecast_days}d_{run_tag}.npy", forecast)
-        pd.DataFrame({"pred_cases": forecast}).to_csv(
-            out_dir / f"forecast_{forecast_days}d_{run_tag}.csv", index=False
-        )
-        # Keep legacy 28-day filenames for backward compatibility.
-        if forecast_days == 28:
-            np.save(out_dir / "forecast_28d.npy", forecast)
-            pd.DataFrame({"pred_cases": forecast}).to_csv(out_dir / "forecast_28d.csv", index=False)
-            np.save(out_dir / f"forecast_28d_{run_tag}.npy", forecast)
-            pd.DataFrame({"pred_cases": forecast}).to_csv(
-                out_dir / f"forecast_28d_{run_tag}.csv", index=False
-            )
+        np.save(out_dir / f"{forecast_base}.npy", forecast)
+        forecast_df.to_csv(out_dir / f"{forecast_base}.csv", index=False)
+        np.save(out_dir / f"{forecast_base}_{run_tag}.npy", forecast)
+        forecast_df.to_csv(out_dir / f"{forecast_base}_{run_tag}.csv", index=False)
 
     fit_df = pd.DataFrame(
         {
-            "day_index": np.arange(len(y_true_full), dtype=int),
+            "day_idx": np.arange(len(y_true_full), dtype=int),
             "split": np.where(np.arange(len(y_true_full)) < training_num_steps, "train", "test"),
-            "true_cases": y_true_full,
+            "truth_cases": y_true_full,
             "pred_cases": preds_total_np,
+            "smooth_cases_window": np.full(len(y_true_full), int(args.smooth_cases_window), dtype=int),
         }
     )
     fit_df.to_csv(out_dir / f"fit_train_test_{run_tag}.csv", index=False)
@@ -941,7 +975,8 @@ def main():
             y_true_full=y_true_full,
             y_pred_full=preds_total_np,
             split_idx=training_num_steps,
-            title=f"NYC GradMeta fit ({run_tag}, ASOF={args.asof})",
+            title=f"NYC GradMeta fit ({run_tag}, ASOF={args.asof}, {smoothing_desc})",
+            truth_label=smoothing_desc,
         )
 
     with open(out_dir / f"metrics_{run_tag}.json", "w", encoding="utf-8") as f:
@@ -959,11 +994,14 @@ def main():
             "epochs_together": epochs_together,
             "seed": seed,
             "adapter_target": args.adapter_target,
+            "target_name": target_name,
+            "smooth_cases_window": int(args.smooth_cases_window),
+            "window_days": int(args.window_days),
             "train_rmse": train_metrics["rmse"],
             "train_mae": train_metrics["mae"],
             "test_rmse": test_metrics["rmse"],
-                "test_mae": test_metrics["mae"],
-                "test_mape": test_metrics["mape"],
+            "test_mae": test_metrics["mae"],
+            "test_mape": test_metrics["mape"],
             }
         ]
     )
@@ -980,7 +1018,7 @@ def main():
         beta_vec = adjustment_matrix.mean(dim=0)
         private_stats = get_private_stats(private_train)
         print(f"X_train shape: {tuple(X_train.shape)}")
-        print(f"y_train shape: {tuple(y_train_s.shape)}")
+        print(f"y_train shape: {tuple(y_train.shape)}")
         print(f"private tensor shape: {tuple(private_train.shape)}")
         print(f"private tensor stats after normalization: {private_stats}")
         print(f"params_epi_weekly shape: {tuple(params_epi_weekly.shape)}")
@@ -990,6 +1028,8 @@ def main():
         print(f"forecast shape: {tuple(forecast.shape)}")
         print(f"test_horizon: {test_horizon}")
         print(f"run_tag: {run_tag}")
+        print(f"target_name: {target_name}")
+        print(f"smooth_cases_window: {args.smooth_cases_window}")
 
         for i, key in enumerate(PARAM_ORDER):
             pmin = float(params_epi_weekly[:, i].min().detach().cpu().item())

@@ -27,12 +27,15 @@ usage() {
   cat <<'EOF'
 Usage: train_nyc.sh [--asof YYYY-MM-DD] [--mode public_only|opentable] [--force-prep|--skip-prep] [--long]
                     [--stage gradmeta|adapter|together|all]
+                    [--smooth-cases-window 0|3|7] [--window-days N]
                     [--epochs-gradmeta N] [--epochs-adapter N] [--epochs-together N]
                     [--adapter-loss mse|rmse] [--use-adapter]
 Defaults:
   --asof defaults to $ASOF env or 2022-10-15
   --mode public_only
   --stage all
+  --smooth-cases-window 0
+  --window-days 170
   prep: auto (run only if files missing). Use --force-prep to rebuild, --skip-prep to require existing files.
   --long enables long-training regimen (num_epochs_long or 5x default) and passes clip norm if set.
 EOF
@@ -48,6 +51,8 @@ ADAPTER_LOSS="${ADAPTER_LOSS:-mse}"
 EPOCHS_GRADMETA="${EPOCHS_GRADMETA:-}"
 EPOCHS_ADAPTER="${EPOCHS_ADAPTER:-}"
 EPOCHS_TOGETHER="${EPOCHS_TOGETHER:-}"
+SMOOTH_CASES_WINDOW="${SMOOTH_CASES_WINDOW:-0}"
+WINDOW_DAYS="${WINDOW_DAYS:-170}"
 FORCE_PREP=0
 SKIP_PREP=0
 
@@ -64,6 +69,8 @@ while [[ $# -gt 0 ]]; do
     --epochs-gradmeta|--epochs_gradmeta) EPOCHS_GRADMETA="$2"; shift 2 ;;
     --epochs-adapter|--epochs_adapter) EPOCHS_ADAPTER="$2"; shift 2 ;;
     --epochs-together|--epochs_together) EPOCHS_TOGETHER="$2"; shift 2 ;;
+    --smooth-cases-window|--smooth_cases_window) SMOOTH_CASES_WINDOW="$2"; shift 2 ;;
+    --window-days|--window_days) WINDOW_DAYS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
   esac
@@ -131,8 +138,8 @@ case "$ADAPTER_LOSS" in
     ;;
 esac
 
-train_csv="${ONLINE_DIR}/train_${ASOF}.csv"
-test_csv="${ONLINE_DIR}/test_${ASOF}.csv"
+train_csv="${ONLINE_DIR}/train_${ASOF}_history${WINDOW_DAYS}_w${SMOOTH_CASES_WINDOW}.csv"
+test_csv="${ONLINE_DIR}/test_${ASOF}_history${WINDOW_DAYS}_w${SMOOTH_CASES_WINDOW}.csv"
 private_pt="${PRIVATE_DIR}/opentable_private_lap_${ASOF}.pt"
 
 need_public_prep=0
@@ -159,7 +166,11 @@ fi
 if [[ $need_public_prep -eq 1 ]]; then
   echo "==> Building public datasets (train/test) for ASOF=${ASOF}"
   ./scripts/build_data.sh
-  "$PYTHON" scripts/prepare_online_nyc.py --config "$CFG" --asof "$ASOF"
+  "$PYTHON" scripts/prepare_online_nyc.py \
+    --config "$CFG" \
+    --asof "$ASOF" \
+    --window_days "$WINDOW_DAYS" \
+    --smooth_cases_window "$SMOOTH_CASES_WINDOW"
 else
   echo "==> Reusing existing public datasets: $train_csv, $test_csv"
 fi
@@ -180,8 +191,10 @@ fi
 echo "==> Training (${RUN_MODE}) ASOF=${ASOF}"
 echo "    ONLINE_DIR=$ONLINE_DIR"
 echo "    PRIVATE_DIR=$PRIVATE_DIR"
+echo "    WINDOW_DAYS=$WINDOW_DAYS"
+echo "    SMOOTH_CASES_WINDOW=$SMOOTH_CASES_WINDOW"
 TRAIN_ARGS=( -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config "$CFG" --asof "$ASOF" $PRIVATE_FLAG )
-TRAIN_ARGS+=( --stage "$STAGE" --adapter_loss "$ADAPTER_LOSS" )
+TRAIN_ARGS+=( --stage "$STAGE" --adapter_loss "$ADAPTER_LOSS" --window_days "$WINDOW_DAYS" --smooth_cases_window "$SMOOTH_CASES_WINDOW" )
 if [[ -n "${EPOCHS:-}" ]]; then
   TRAIN_ARGS+=( --epochs "$EPOCHS" )
 fi
