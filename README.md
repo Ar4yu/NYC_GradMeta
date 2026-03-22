@@ -1,264 +1,511 @@
-# NYC GradMeta (Thesis Runbook)
+# NYC_GradMeta
 
-This repo mirrors the professor's Bogotá GradMeta/GradABM stack on NYC data. The pipeline:
+NYC_GradMeta is an NYC-specific port of a GradMeta / DPEpiNN-style epidemic forecasting pipeline. The repository trains a two-encoder calibration network on public signals, optionally augments it with an OpenTable auxiliary signal, rolls the resulting weekly epidemiological parameters through a daily metapopulation SEIRM-Beta simulator, and optionally adds a GRU residual adapter on top of the mechanistic forecast. The current contract in code is a 28-day forecast horizon, weekly piecewise-constant parameters selected by `t // 7`, and a daily simulator step. The current repository also contains negative or unstable runs; those are informative and are called out explicitly below rather than hidden.
 
-- encodes private (OpenTable) + public sequences via the two-encoder calibration net
-- decodes weekly epi parameters + seeds + beta matrix using Bogotá-style sigmoid → min/max scaling
-- runs the Metapopulation SEIRM(Beta) simulator + optional adapter correction with a Bogotá-inspired 3-stage regimen (GradMeta → Adapter → Together)
-- ships utilities/scripts for rebuilding processed data, training in stages, and logging reproducible outputs
+## 1) Quickstart
 
-<details>
-<summary>**1) Getting started (keeps README compact)**</summary>
+These commands use the processed CSVs already committed under `data/processed/`. They will write new artifacts into `outputs/nyc/2022-10-15/` and may overwrite local files with the same run tag.
+
+### 5-minute smoke test: public-only
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .
 chmod +x scripts/*.sh
-```
 
-- Every script prefers `.venv/bin/python` when present; override with `PYTHON=/path/to/python` if needed.
-- Use `pip install -e .` once per machine to register the package imports.
-
-- **Linux GPU / Conda option**: if you’re running on NVIDIA lab machines, create a CUDA-enabled `conda` env instead:
-
-```bash
-conda create -n nyc-gradmeta python=3.10
-conda activate nyc-gradmeta
-conda install pytorch torchvision torchaudio pytorch-cuda=12.8 -c pytorch -c nvidia
-pip install -e .
-chmod +x scripts/*.sh
-```
-
-Inside that environment PyTorch will see the GPU automatically (`torch.cuda.is_available()` returns `True`). Set `CUDA_VISIBLE_DEVICES=0` or similar before running if you need to pin a specific card. All scripts still use the same CLI; just activate the conda env before invoking them.
-
-- **Linux RTX 5090 / Blackwell option**: the repo also includes a pip/venv helper that targets official CUDA 12.8 wheels and runs a quick GPU smoke check:
-
-```bash
-chmod +x scripts/setup_linux_5090.sh
-./scripts/setup_linux_5090.sh
-source .venv-5090/bin/activate
-python scripts/check_gpu_env.py
-```
-
-- If a lab machine reports unsupported `sm_120`, the usual fix is to upgrade PyTorch/CUDA wheels first rather than changing repo code.
-- If you later add any custom CUDA extensions on the lab machines, rebuild them with `TORCH_CUDA_ARCH_LIST=12.0`.
-
-</details>
-
-<details>
-<summary>**1a) After clone / copying between machines**</summary>
-
-Make sure the processed-data tree exists and is populated before you rely on training runs. After `git clone`, run:
-
-```bash
-mkdir -p data/processed data/processed/online data/processed/private
-./scripts/build_data.sh
-.venv/bin/python scripts/build_private_opentable_tensor.py \
-  --asof 2022-10-15 \
+.venv/bin/python scripts/prepare_online_nyc.py \
   --config configs/nyc.json \
+  --asof 2022-10-15 \
+  --window_days 170 \
+  --smooth_cases_window 7
+
+USE_ADAPTER=0 SMOOTH_CASES_WINDOW=7 WINDOW_DAYS=170 \
+./scripts/run_from_processed.sh 2022-10-15 --no_private --epochs 1 --val_split 0
+```
+
+Expected outputs include:
+
+- [outputs/nyc/2022-10-15/forecast_28d_w7.csv](outputs/nyc/2022-10-15/forecast_28d_w7.csv)
+- `outputs/nyc/2022-10-15/metrics_public_only_w7.json` if you run the command above
+- [outputs/nyc/2022-10-15/metrics_summary.csv](outputs/nyc/2022-10-15/metrics_summary.csv)
+
+### 5-minute smoke test: public + OpenTable
+
+```bash
+.venv/bin/python scripts/build_private_opentable_tensor.py \
+  --config configs/nyc.json \
+  --asof 2022-10-15 \
   --opentable_csv data/processed/opentable_yoy_daily.csv \
   --opentable_col yoy_seated_diner
+
+.venv/bin/python scripts/prepare_online_nyc.py \
+  --config configs/nyc.json \
+  --asof 2022-10-15 \
+  --window_days 170 \
+  --smooth_cases_window 7
+
+USE_ADAPTER=0 SMOOTH_CASES_WINDOW=7 WINDOW_DAYS=170 \
+./scripts/run_from_processed.sh 2022-10-15 --epochs 1 --val_split 0
 ```
 
-This recreates `data/processed/nyc_master_daily.csv`, the online `train/test` CSVs, and the OpenTable `[16,T]` tensor, so you can `git pull` on another machine and immediately run `./scripts/train_nyc.sh`. These directories remain in place even if the repo is copied or checked out elsewhere.
+Expected outputs include:
 
-</details>
+- [outputs/nyc/2022-10-15/forecast_28d_w7.csv](outputs/nyc/2022-10-15/forecast_28d_w7.csv)
+- [outputs/nyc/2022-10-15/metrics_summary.csv](outputs/nyc/2022-10-15/metrics_summary.csv)
 
-<details>
-<summary>**2) Data flows & preprocessing (documented for thesis reproducibility)**</summary>
-
-### Core inputs
-
-- `data/processed/nyc_master_daily.csv`: merged cases/deaths/hosp + mobility + trends, ready for `prepare_online_nyc.py`.
-- `data/processed/opentable_yoy_daily.csv`: private OpenTable YoY signal used to build the `[16, T]` tensor.
-- The OpenTable file contains 170 days of true signal (2020-02-18 → 2020-08-05). The tensor builder right-aligns these rows in `opentable_private_lap_<ASOF>.pt` so the model sees only those dates where the private data actually exists while still matching the full `nyc_master_daily` timeline.
-- `data/processed/contact_matrix_us.csv` and `data/processed/population_nyc_age16_2020.csv`: simulator contact + population constants.
-- `configs/nyc.json`: central configuration (patch count, `num_pub_features`, epoch defaults, file paths, biasing ranges, `param_ranges`).
-
-### Generated artifacts per ASOF
-
-- `data/processed/online/train_<ASOF>_history<WINDOW_DAYS>_w<W>.csv` / `test_<ASOF>_history<WINDOW_DAYS>_w<W>.csv`: final public covariates + targets. These files contain `cases_raw`, `cases`, and `pub_0...`; `SeqDataset` uses `cases` by default and excludes both case columns from features.
-- `data/processed/online/public_feature_map_<ASOF>_history<WINDOW_DAYS>_w<W>.csv`: column order reference for your thesis methods section.
-- `data/processed/online/split_info_<ASOF>_history<WINDOW_DAYS>_w<W>.json`: reproducible split metadata (train/test lengths + window mode).
-- `data/processed/private/opentable_private_lap_<ASOF>.pt`: `[16, T]` tensor; `align_private_tensor` handles right alignment + normalization.
-
-### External source data for the new NYC baseline
-
-- NYC City daily case/hospitalization data (NYC OpenData COVID Daily Counts). [https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data](https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data)
-- OpenTable reservation dataset (Kaggle). [https://www.kaggle.com/datasets/pizacd/opentable-reservation-data](https://www.kaggle.com/datasets/pizacd/opentable-reservation-data)
-- Google RID mobility report (US/NYC). [https://www.google.com/covid19/mobility/](https://www.google.com/covid19/mobility/)
-- Google Trends “Covid 19” NYC view (Jan 2020–Jan 2022). [https://trends.google.com/explore?geo=US-NY&q=Covid%252019&date=2020-01-01%202022-01-01](https://trends.google.com/explore?geo=US-NY&q=Covid%252019&date=2020-01-01%202022-01-01)
-- Contact matrix (NYC/US) – document which source you copy into `data/processed/contact_matrix_us.csv` when updating the pipeline; if rebuilt, note the provenance in `README.md`.
-
-Collect each dataset in `data/processed` before running the pipeline, keep notes on the source URLs + collection date, and describe any additional preprocessing (e.g., resampling or aggregation) in this README so Professor Nguyen can reproduce the Feb 9 result. Mention whether the OpenTable window or Google Trends window limits the train/test horizon, and keep the contact matrix up to date with the current US configuration.
-
-### Build commands (run before staging, example ASOF=2022-10-15)
+If you want the one-command smoothing smoke test already in the repo, use:
 
 ```bash
-.venv/bin/python scripts/prepare_online_nyc.py --asof 2022-10-15 --config configs/nyc.json --window_days 170 --smooth_cases_window 0
+./scripts/smoke_test_smoothing.sh 2022-10-15
+```
+
+## 2) Data Sources + Licensing / Usage Notes
+
+This repository ships processed data under `data/processed/`, including:
+
+- `data/processed/nyc_master_daily.csv`
+- `data/processed/cases_nyc_daily.csv`
+- `data/processed/mobility_nyc_daily.csv`
+- `data/processed/trends_us_ny_daily.csv`
+- `data/processed/opentable_yoy_daily.csv`
+- `data/processed/population_nyc_age16_2020.csv`
+- `data/processed/contact_matrix_us.csv`
+- windowed train/test files under `data/processed/online/`
+
+Raw source files under `data/raw/` are not committed. To rebuild from raw inputs, you must supply the raw case, mobility, and OpenTable files locally and let the repo scripts regenerate the processed outputs.
+
+Verified external sources referenced by code or existing repo documentation:
+
+- NYC DOHMH / NYC Open Data daily COVID counts: <https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data>
+- Google COVID-19 Community Mobility Reports historical source: <https://www.google.com/covid19/mobility/>
+- Google Trends (repo uses topic id `/g/11j2cc_qll`, geo `US-NY-501`): <https://trends.google.com/trends/>
+- Kaggle OpenTable reservation dataset page: <https://www.kaggle.com/datasets/pizacd/opentable-reservation-data>
+- NYC Planning Population FactFinder: <https://popfactfinder.planning.nyc.gov/>
+- Patchflow data repository: <https://github.com/nssac/patchflow-data>
+
+Important usage notes:
+
+- `build_cases_nyc.py` expects a raw citywide daily counts CSV at `data/raw/COVID-19_Daily_Counts_of_Cases,_Hospitalizations,_and_Deaths_20260213.csv`.
+- `inspect_data.py` expects `data/raw/Region_Mobility_Report_CSVs.zip`.
+- `build_opentable_yoy.py` expects `data/raw/YoY_Seated_Diner_Data.csv`.
+- `download_trends_daily.py` can regenerate trends via `pytrends` if `data/processed/trends_us_ny_daily.csv` is absent.
+- The committed NYC age-bin population file is built from NYS DOH Vital Statistics data in [`src/nyc_gradmeta/data/build_population_nyc_age16.py`](src/nyc_gradmeta/data/build_population_nyc_age16.py), not from Population FactFinder.
+- [`src/nyc_gradmeta/data/process_patchflow_age_data.py`](src/nyc_gradmeta/data/process_patchflow_age_data.py) can normalize locally downloaded Patchflow-derived population/contact CSVs into the same 16-bin format used by this repo.
+- External data remain subject to their original licenses and terms of use; this repo does not restate those licenses.
+
+## 3) Repository Layout
+
+- `configs/`
+  - [`configs/nyc.json`](configs/nyc.json): active runtime config for the current pipeline.
+  - [`configs/nyc.yaml`](configs/nyc.yaml): older high-level config sketch; not the main training config.
+- `scripts/`
+  - [`scripts/build_data.sh`](scripts/build_data.sh): rebuilds processed public data.
+  - [`scripts/prepare_online_nyc.py`](scripts/prepare_online_nyc.py): constructs train/test CSVs for a specific ASOF date.
+  - [`scripts/build_private_opentable_tensor.py`](scripts/build_private_opentable_tensor.py): converts OpenTable YoY into the aligned per-patch tensor.
+  - [`scripts/run_nyc_master_only.sh`](scripts/run_nyc_master_only.sh): public-only runner.
+  - [`scripts/run_nyc_with_opentable.sh`](scripts/run_nyc_with_opentable.sh): public + OpenTable runner.
+  - [`scripts/run_from_processed.sh`](scripts/run_from_processed.sh): fastest way to train using already-built processed files.
+  - [`scripts/smoke_test_smoothing.sh`](scripts/smoke_test_smoothing.sh): 1-epoch smoothing smoke test for `w=3` and `w=7`.
+- `src/nyc_gradmeta/data/`
+  - raw-to-processed builders for cases, mobility, trends, population, and OpenTable
+  - [`src/nyc_gradmeta/data/seq_dataset.py`](src/nyc_gradmeta/data/seq_dataset.py): full-sequence dataset loader
+  - [`src/nyc_gradmeta/data/process_patchflow_age_data.py`](src/nyc_gradmeta/data/process_patchflow_age_data.py): normalizes local Patchflow-derived age-stratified population/contact CSVs into the repo's 16-bin format
+- `src/nyc_gradmeta/models/`
+  - [`src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py`](src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py): main training / evaluation / artifact-writing entry point
+- `src/nyc_gradmeta/sim/`
+  - [`src/nyc_gradmeta/sim/model_utils.py`](src/nyc_gradmeta/sim/model_utils.py): ParameterNN, simulator, and residual adapter implementations
+- `data/processed/`
+  - committed processed tables used by the current repo
+  - committed windowed `online/` train/test CSVs for `ASOF=2022-10-15`
+- `outputs/nyc/<ASOF>/`
+  - run outputs, forecasts, metrics, fit CSVs, and PNGs
+
+Current output naming conventions in code:
+
+- `forecast_28d_w<W>.csv` and `forecast_28d_w<W>_<run_tag>.csv`
+- `fit_train_test_<run_tag>.csv`
+- `fit_train_test_<run_tag>.png`
+- `metrics_<run_tag>.json`
+- `metrics_summary.csv`
+
+There are also older legacy artifacts in `outputs/nyc/2022-10-15/` such as `forecast_34d*` and unsuffixed adapter outputs. Those predate the current smoothing/window contract and should not be treated as the canonical 28-day comparison files.
+
+## 4) Pipeline Overview
+
+The current code implements three modules.
+
+### Module 1: ParameterNN / calibration network
+
+Code entry points:
+
+- [`src/nyc_gradmeta/sim/model_utils.py`](src/nyc_gradmeta/sim/model_utils.py)
+- class `CalibNNTwoEncoderThreeOutputs`
+- wrapper `param_model_forward(...)` in [`src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py`](src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py)
+
+What it does:
+
+- encodes `x_private` with a GRU + attention encoder
+- encodes `x_public` with a second GRU + attention encoder
+- concatenates the two embeddings
+- decodes a weekly latent sequence
+- outputs:
+  - weekly epidemiological parameters `out` with shape `[W, 7]`
+  - `seed_status` with shape `[P]`
+  - `beta_matrix` with shape `[P, P]`
+
+The weekly parameters are piecewise-constant by construction after decoding. In the simulator wrapper, the active week is chosen with:
+
+```python
+week_idx = min(t // 7, max_week_idx)
+```
+
+which matches the thesis design contract.
+
+### Module 2: Metapopulation SEIRM-Beta simulator
+
+Code entry points:
+
+- [`src/nyc_gradmeta/sim/model_utils.py`](src/nyc_gradmeta/sim/model_utils.py)
+- class `MetapopulationSEIRMBeta`
+- function `forward_simulator(...)` in [`src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py`](src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py)
+
+What it does:
+
+- runs a daily compartment update
+- uses the current weekly parameter vector selected by `t // 7`
+- returns daily new infections (citywide forecast is the patch sum across the daily outputs)
+- uses a 16-patch age-structured contact matrix and 16-bin age population vector
+
+### Module 3: Error-correction adapter
+
+Code entry point:
+
+- class `ErrorCorrectionAdapter` in [`src/nyc_gradmeta/sim/model_utils.py`](src/nyc_gradmeta/sim/model_utils.py)
+
+This is a lightweight GRU residual model. It takes the simulator’s daily citywide prediction sequence and learns an additive correction term. It is not a chunk-based adapter; it is a sequence model over the forecast itself.
+
+### What is preserved vs. changed from the Bogotá-style reference
+
+Verified from code comments and implementation:
+
+- preserved:
+  - two-encoder calibration architecture
+  - weekly parameter decoding
+  - staged training schedule (`gradmeta -> adapter -> together`)
+  - sigmoid plus min/max scaling of epi, seed, and beta heads
+- changed:
+  - NYC data ingestion and feature schema
+  - 16 age-bin patches
+  - OpenTable YoY as the auxiliary signal
+  - current forecast horizon fixed at 28 days
+
+## 5) Data Contracts
+
+### Public feature schema
+
+The active config is:
+
+- `target_source_column = total_cases`
+- `public_feature_mode = all_public`
+- `num_pub_features = 10`
+
+For the committed `ASOF=2022-10-15`, the public feature map is:
+
+- [`data/processed/online/public_feature_map_2022-10-15_history170_w7.csv`](data/processed/online/public_feature_map_2022-10-15_history170_w7.csv)
+
+which maps:
+
+- `pub_0 -> probable_cases`
+- `pub_1 -> hospitalizations`
+- `pub_2 -> deaths`
+- `pub_3 -> mob_retail`
+- `pub_4 -> mob_grocery`
+- `pub_5 -> mob_parks`
+- `pub_6 -> mob_transit`
+- `pub_7 -> mob_work`
+- `pub_8 -> mob_residential`
+- `pub_9 -> trend_covid_topic`
+
+### What `cases` means in the current code
+
+This is important.
+
+- Raw case inputs come from [`src/nyc_gradmeta/data/build_cases_nyc.py`](src/nyc_gradmeta/data/build_cases_nyc.py)
+  - `cases = CASE_COUNT`
+  - `probable_cases = PROBABLE_CASE_COUNT`
+- [`src/nyc_gradmeta/data/build_master_daily.py`](src/nyc_gradmeta/data/build_master_daily.py) then defines:
+  - `total_cases = cases + probable_cases`
+- [`scripts/prepare_online_nyc.py`](scripts/prepare_online_nyc.py) uses:
+  - `cases_raw = total_cases`
+  - `cases = causal rolling mean of cases_raw` if `--smooth_cases_window > 0`, otherwise raw
+
+So, in the current repo:
+
+- `cases_raw` means `confirmed + probable`
+- `cases` means either raw `confirmed + probable` or a causal moving average of that same series
+- covariates are not smoothed by `prepare_online_nyc.py`
+
+To change this behavior, edit `nyc.target_source_column` in [`configs/nyc.json`](configs/nyc.json).
+
+### Train/test split logic
+
+Verified from [`scripts/prepare_online_nyc.py`](scripts/prepare_online_nyc.py):
+
+- default `window_days = 170`
+- default `split_mode = horizon`
+- default `test_days = nyc.test_days = 28`
+- for `ASOF=2022-10-15` and `window_days=170`, the committed split file is:
+  - [`data/processed/online/split_info_2022-10-15_history170_w7.json`](data/processed/online/split_info_2022-10-15_history170_w7.json)
+- this yields:
+  - `train_days = 142`
+  - `test_days = 28`
+
+The trainer can further carve a validation window out of the train sequence via `--val_split`. For the committed best `w7` adapter runs, the saved metrics show `train_len = 142`, which indicates `--val_split 0` was used for those specific runs.
+
+### OpenTable processing contract
+
+Verified from [`scripts/build_private_opentable_tensor.py`](scripts/build_private_opentable_tensor.py):
+
+- source column is typically `yoy_seated_diner`
+- the city-level daily series is aligned onto the master-date index up to `ASOF`
+- missing dates are interpolated and filled
+- the citywide signal is replicated across patches using population-share weights
+- the saved tensor is `[P, T]` with `P = 16`
+- the saved filename is `opentable_private_lap_<ASOF>.pt`
+
+Important: despite the `_lap_` suffix, the current script does **not** apply Laplace noise. The name is legacy.
+
+## 6) Running Experiments (Conditions A / B / C)
+
+### Condition A: public-only baseline
+
+Current public-only runner:
+
+- [`scripts/run_nyc_master_only.sh`](scripts/run_nyc_master_only.sh)
+
+Recommended thesis-aligned command using the current smoothing/window contract:
+
+```bash
+.venv/bin/python scripts/prepare_online_nyc.py \
+  --config configs/nyc.json \
+  --asof 2022-10-15 \
+  --window_days 170 \
+  --smooth_cases_window 7
+
+USE_ADAPTER=1 SMOOTH_CASES_WINDOW=7 WINDOW_DAYS=170 \
+./scripts/run_nyc_master_only.sh 2022-10-15 --val_split 0
+```
+
+Outputs go to `outputs/nyc/2022-10-15/` and include files such as:
+
+- [outputs/nyc/2022-10-15/forecast_28d_w7_public_only_adapter_w7.csv](outputs/nyc/2022-10-15/forecast_28d_w7_public_only_adapter_w7.csv)
+- [outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.csv](outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.csv)
+- [outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.png](outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.png)
+- [outputs/nyc/2022-10-15/metrics_public_only_adapter_w7.json](outputs/nyc/2022-10-15/metrics_public_only_adapter_w7.json)
+
+### Condition B: public + OpenTable (non-private)
+
+Current OpenTable runner:
+
+- [`scripts/run_nyc_with_opentable.sh`](scripts/run_nyc_with_opentable.sh)
+
+Recommended thesis-aligned command using the current smoothing/window contract:
+
+```bash
 .venv/bin/python scripts/build_private_opentable_tensor.py \
+  --config configs/nyc.json \
   --asof 2022-10-15 \
   --opentable_csv data/processed/opentable_yoy_daily.csv \
-  --opentable_col yoy_seated_diner \
-  --config configs/nyc.json
+  --opentable_col yoy_seated_diner
+
+.venv/bin/python scripts/prepare_online_nyc.py \
+  --config configs/nyc.json \
+  --asof 2022-10-15 \
+  --window_days 170 \
+  --smooth_cases_window 7
+
+USE_ADAPTER=1 SMOOTH_CASES_WINDOW=7 WINDOW_DAYS=170 \
+./scripts/run_nyc_with_opentable.sh 2022-10-15 --val_split 0
 ```
 
-### Smoothing cases
+Outputs include:
 
-- `--smooth_cases_window` accepts `0`, `3`, or `7`.
-- Smoothing is applied only in `scripts/prepare_online_nyc.py`, only to the target series, and uses a causal rolling mean with `rolling(window=W, min_periods=1).mean()`.
-- Mobility, trends, and OpenTable are never smoothed.
-- `cases_raw` stores the original daily confirmed counts; `cases` stores the target actually used by training, evaluation, plots, and saved forecasts.
+- [outputs/nyc/2022-10-15/forecast_28d_w7_public_opentable_adapter_w7.csv](outputs/nyc/2022-10-15/forecast_28d_w7_public_opentable_adapter_w7.csv)
+- [outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.csv](outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.csv)
+- [outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.png](outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.png)
+- [outputs/nyc/2022-10-15/metrics_public_opentable_adapter_w7.json](outputs/nyc/2022-10-15/metrics_public_opentable_adapter_w7.json)
+
+### Condition C: public + OpenTable with DP
+
+Status: **planned, not implemented in the current repo**
+
+What is missing today:
+
+- no `epsilon` or privacy CLI flag in the training or preprocessing scripts
+- no clipping or sensitivity computation in [`scripts/build_private_opentable_tensor.py`](scripts/build_private_opentable_tensor.py)
+- no Laplace mechanism or other DP noise addition in the current code path
+- no DP-specific artifact naming, metrics aggregation, or epsilon sweep logic
+- no privacy accounting report
+
+Files that would need modification for a Condition C implementation:
+
+- [`scripts/build_private_opentable_tensor.py`](scripts/build_private_opentable_tensor.py)
+- [`src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py`](src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py)
+- optionally [`scripts/train_nyc.sh`](scripts/train_nyc.sh) and the runner scripts to propagate privacy flags
+
+## 7) Results
+
+These results are **preliminary** and come directly from committed artifacts in:
+
+- [outputs/nyc/2022-10-15/metrics_summary.csv](outputs/nyc/2022-10-15/metrics_summary.csv)
+
+To keep the comparison aligned with the current 28-day, `window_days=170`, smoothed-target contract, the most coherent pair of A/B runs currently committed are:
+
+- Condition A: `public_only_adapter_w7`
+- Condition B: `public_opentable_adapter_w7`
+
+The repository also contains older legacy rows that do not match the current contract exactly:
+
+- `public_opentable_adapter` reports `test_len = 34` in its JSON and aligns with older `forecast_34d*` artifacts
+- `public_opentable_w7` is a 1-epoch smoke run, not a fully trained comparison
+
+### Preliminary comparison table (adapter-enabled, `w=7`)
+
+| Condition | Run tag | Test length | Test RMSE | Test MAE | Test MAPE |
+| --- | --- | ---: | ---: | ---: | ---: |
+| A: public-only | `public_only_adapter_w7` | 28 | 553.1390 | 547.3369 | 27.0473 |
+| B: public + OpenTable | `public_opentable_adapter_w7` | 28 | 134.3718 | 113.5912 | 5.4687 |
+
+Exact supporting files:
+
+- A metrics: [outputs/nyc/2022-10-15/metrics_public_only_adapter_w7.json](outputs/nyc/2022-10-15/metrics_public_only_adapter_w7.json)
+- B metrics: [outputs/nyc/2022-10-15/metrics_public_opentable_adapter_w7.json](outputs/nyc/2022-10-15/metrics_public_opentable_adapter_w7.json)
+- A forecast CSV: [outputs/nyc/2022-10-15/forecast_28d_w7_public_only_adapter_w7.csv](outputs/nyc/2022-10-15/forecast_28d_w7_public_only_adapter_w7.csv)
+- B forecast CSV: [outputs/nyc/2022-10-15/forecast_28d_w7_public_opentable_adapter_w7.csv](outputs/nyc/2022-10-15/forecast_28d_w7_public_opentable_adapter_w7.csv)
+- A fit CSV: [outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.csv](outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.csv)
+- B fit CSV: [outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.csv](outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.csv)
+- A plot: [outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.png](outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.png)
+- B plot: [outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.png](outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.png)
+
+Condition A plot:
+
+![Condition A fit](outputs/nyc/2022-10-15/fit_train_test_public_only_adapter_w7.png)
+
+Condition B plot:
+
+![Condition B fit](outputs/nyc/2022-10-15/fit_train_test_public_opentable_adapter_w7.png)
+
+## 8) Smoothing Support (3-day / 7-day)
+
+Smoothing is implemented in the current repo.
+
+Verified behavior:
+
+- flag: `--smooth_cases_window {0,3,7}`
+- implemented in: [`scripts/prepare_online_nyc.py`](scripts/prepare_online_nyc.py)
+- smoothing target: `cases_raw -> cases`
+- method: `rolling(window=W, min_periods=1).mean()`
+- causal only; not centered
+- only the target series is smoothed
+- mobility, trends, and OpenTable are **not** smoothed here
+
+Saved train/test schema:
+
+- `cases_raw`
+- `cases`
+- `pub_0 ... pub_9`
+
+Saved forecast CSV schema:
+
+- `day_idx`
+- `pred_cases`
+- `smooth_cases_window`
+- `truth_cases`
+
+Saved fit CSV schema:
+
+- `day_idx`
+- `split`
+- `truth_cases`
+- `pred_cases`
+- `smooth_cases_window`
+
+Why this matters:
+
+- daily COVID reporting often has weekday / weekend cyclicality
+- smoothing the target can stabilize training and improve visual interpretability
+- the code now keeps the target definition consistent from train/test preparation through evaluation and plotting
+
+Exact smoke-test command for smoothing is already in the repo:
 
 ```bash
-.venv/bin/python scripts/prepare_online_nyc.py --config configs/nyc.json --asof 2022-10-15 --window_days 170 --smooth_cases_window 3
-.venv/bin/python -m nyc_gradmeta.models.forecasting_gradmeta_nyc --config configs/nyc.json --asof 2022-10-15 --window_days 170 --smooth_cases_window 3 --epochs 1 --self_check
+./scripts/smoke_test_smoothing.sh 2022-10-15
 ```
 
-The scripts also write:
+## 9) Differential Privacy Plan (Condition C)
 
-- `data/processed/online/split_info_<ASOF>.json`
-- `data/processed/online/public_feature_map_<ASOF>.csv`
-- Private tensor metadata (shape, date range) printed to console.
+Condition C is not implemented yet.
 
-Long-running staged training that matches DPEpiNN’s schedule (Stage 1 ~5k epochs, Stages 2/3 ~1k epochs each) and reuses existing inputs:
+Planned approach for the current repo structure:
 
-```bash
-USE_ADAPTER=1 LONG_TRAIN=1 CLIP_NORM=10 STAGE=all ./scripts/run_nyc_with_opentable.sh 2022-10-15 --skip-prep
-```
+- privacy unit:
+  - `TBD`. The most defensible candidate in this aggregated setting is a user-level interpretation tied to the OpenTable contribution mechanism, but the current repo only sees an already aggregated city-level series.
+- clipping strategy:
+  - `TBD`. A practical implementation point would be [`scripts/build_private_opentable_tensor.py`](scripts/build_private_opentable_tensor.py) before saving `opentable_private_lap_<ASOF>.pt`.
+- sensitivity `Δf`:
+  - `TBD`. It is not computed anywhere in the current repo.
+- mechanism:
+  - Laplace mechanism applied to the OpenTable-derived series or tensor after clipping
+- epsilon sweep:
+  - planned values `{1, 5, 10, 100}`
 
-### Numeric parsing safeguard (important)
+Minimal implementation checklist:
 
-- NYC raw case files may contain quoted thousands separators (for example `"1,034"`).
-- The pipeline now strips commas and coercively parses counts in:
-  - `src/nyc_gradmeta/data/build_cases_nyc.py`
-  - `src/nyc_gradmeta/data/build_master_daily.py`
-  - `scripts/prepare_online_nyc.py`
-- Any remaining non-numeric tokens are reported and filled as `0` with a warning to avoid silent corruption.
+1. Add privacy flags such as `--epsilon` and `--clip_bound`.
+2. Define and document the privacy unit.
+3. Clip the OpenTable signal before tensor replication.
+4. Add Laplace noise with a documented sensitivity.
+5. Save DP-specific artifacts and metrics in distinguishable filenames.
 
-### Feature lagging & temporal context
+Conceptual reference for this plan in the thesis narrative: Dwork and Roth on differential privacy. Exact bibliography entry is `TBD` in this repo and should be taken from the final thesis bibliography.
 
-- `public_feature_map` shows the mapping used by `SeqDataset`: `pub_0=probable_cases`, `pub_1=hospitalizations`, `pub_2=deaths`, `pub_3=mob_retail`, `pub_4=mob_grocery`, `pub_5=mob_parks`, `pub_6=mob_transit`, `pub_7=mob_work`, `pub_8=mob_residential`, `pub_9=trend_covid_topic`.
-- The calibration network consumes the most recent `train_days` worth of these public covariates plus the aligned private tensor; `series_to_supervised` builds lagged public features (`n_in=4`, `n_out=1`) so the encoder sees the last four days before decoding weekly parameters.
-- Private data is right-aligned to match the train+test window, padded to `[num_patch, train+test, 1]`, and normalized (`private_norm=zscore_time` by default), ensuring the encoder sees consistent historical context.
-- When you run staged training, each stage reuses these sequences: Stage 1 builds epi parameters from the historical window, Stage 2 trains the adapter/residual on the same window, and Stage 3 fine-tunes both with the same temporal context. This keeps the pipeline anchored in realistic lagged data and lets the adaptor correct any remaining errors.
+## 10) Reproducibility Checklist
 
-</details>
+- known-good ASOF date in committed outputs: `2022-10-15`
+- expected horizon:
+  - `configs/nyc.json` sets `days_head = 28`
+  - `configs/nyc.json` sets `nyc.test_days = 28`
+  - `forward_simulator(...)` runs daily and the saved forecast uses the final `test_horizon` points
+- verify 28-day contract:
+  - inspect [`data/processed/online/split_info_2022-10-15_history170_w7.json`](data/processed/online/split_info_2022-10-15_history170_w7.json)
+  - inspect [`outputs/nyc/2022-10-15/forecast_28d_w7_public_opentable_adapter_w7.csv`](outputs/nyc/2022-10-15/forecast_28d_w7_public_opentable_adapter_w7.csv)
+- expected artifact families for a successful run:
+  - `metrics_<run_tag>.json`
+  - `forecast_28d_w<W>_<run_tag>.csv`
+  - `fit_train_test_<run_tag>.csv`
+  - `fit_train_test_<run_tag>.png`
+  - `metrics_summary.csv`
+- GPU vs CPU expectations:
+  - the current training loop uses `batch_size=1`
+  - `SeqDataset` returns one full sequence item
+  - the simulator loop is sequential over daily timesteps
+  - GPU helps with tensor ops, but speedup may be limited because the mechanistic simulator still advances day by day and the effective batch size is one long sequence
 
-<details>
-<summary>**3) Training + forecasting (foolproof commands)**</summary>
+## 11) Citation Block
 
-### Shell helpers for any experience level
+Use these as the repo-facing citation placeholders for the thesis. Where the repo does not contain enough information to verify a full citation, the entry is marked `TBD`.
 
-- `scripts/train_nyc.sh`: universal trainer. Flags:
-  - `--mode public_only|opentable`
-  - `--stage gradmeta|adapter|together|all`
-  - `--epochs_gradmeta`, `--epochs_adapter`, `--epochs_together`
-  - `--long_train`, `--clip_norm`
-  - `--adapter_target smoothed|raw` (default `smoothed`); determines whether the adapter is trained on the smoothed public signal (default) or the raw daily counts while the main simulator loss stays on the smoothed target.
-  - `--adapter-loss mse|rmse`, `--use_adapter`
-  - `--skip-prep`, `--force-prep`, `--minimal_outputs`
-- Wrapper scripts call it with sensible defaults and ensure data is built:
-  - `scripts/run_nyc_master_only.sh ASOF`
-  - `scripts/run_nyc_with_opentable.sh ASOF` (also rebuilds private tensor; now propagates any additional flags you append after the ASOF argument so `--adapter_target raw`, `--together_loss_weight`, etc. get forwarded)
-  - `scripts/run_all.sh ASOF` (full pipeline from raw CSVs)
-  - `scripts/run_from_processed.sh ASOF [--no_private] [--epochs N]`
+- Guan, Z., Zhao, Z., Tian, F., Nguyen, D., Bhattacharjee, P., Tandon, R., Prakash, B. A., and Vullikanti, A. "A Framework for Multi-source Privacy Preserving Epidemic Analysis," arXiv:2506.22342, 2025. Available: <https://arxiv.org/abs/2506.22342>. Accessed: Mar. 4, 2026.
+- Dwork & Roth differential privacy book: `TBD exact bibliography entry from the thesis reference manager`.
+- Patchflow contact matrix repository: <https://github.com/nssac/patchflow-data>
+- NYC DOHMH daily counts dataset: <https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data>
+- Kaggle OpenTable reservation dataset: <https://www.kaggle.com/datasets/pizacd/opentable-reservation-data>
+- Google Mobility historical source: <https://www.google.com/covid19/mobility/>
+- Google Trends platform: <https://trends.google.com/trends/>
+- NYC Planning Population FactFinder: <https://popfactfinder.planning.nyc.gov/>
 
-### How staged training runs
+## TODOs
 
-- Stage 1 `gradmeta`: trains `CalibNNTwoEncoderThreeOutputs` alone against simulator RMSE; the best `param_model.pt` checkpoint is saved.
-- Stage 2 `adapter`: freezes that model, trains `ErrorCorrectionAdapter` on `y_train_s - base_preds` (loss type controlled by `--adapter-loss`), and saves `error_adapter.pt`.
-- Stage 3 `together`: unfreezes both modules, blends simulator fit with adapter residual loss using an annealing factor, and updates both checkpoints when the combined loss improves.
-- `STAGE=all` runs the phases sequentially; short-circuit with `--stage adapter` or `--stage together`. `--long_train` multiplies each stage’s epochs (via active `epochs_*` or the config) and enables gradient clipping (`--clip_norm`).
-- See `src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py` for the exact loops and `scripts/train_nyc.sh` for CLI wiring.
-
-### Copy/paste ready commands
-
-```bash
-./scripts/run_nyc_master_only.sh 2022-10-15
-USE_ADAPTER=1 ./scripts/run_nyc_with_opentable.sh 2022-10-15
-LONG_TRAIN=1 CLIP_NORM=10 STAGE=all USE_ADAPTER=1 ./scripts/run_nyc_with_opentable.sh 2022-10-15 --skip-prep
-```
-
-### Adapter target selection
-
-By default, `--adapter_target smoothed` keeps the adapter residual on the smoothed case series (matching the simulator’s loss). Switch to `--adapter_target raw` if you want the adapter to learn corrections relative to the raw daily counts before smoothing; the main simulator still minimizes smoothed loss, so this lets the adapter account for higher-frequency noise without destabilizing the mechanistic core. Try both settings (e.g., `--adapter_target raw --self_check`) before your long runs and log which one you used in `outputs/nyc/<ASOF>/metrics_summary.csv`.
-
-### Reload full pipeline after preprocessing fixes
-
-```bash
-./scripts/build_data.sh
-.venv/bin/python scripts/build_private_opentable_tensor.py --config configs/nyc.json --asof 2022-10-15 --opentable_csv data/processed/opentable_yoy_daily.csv --opentable_col yoy_seated_diner
-.venv/bin/python scripts/prepare_online_nyc.py --config configs/nyc.json --asof 2022-10-15
-LONG_TRAIN=1 CLIP_NORM=10 STAGE=all USE_ADAPTER=1 ./scripts/run_from_processed.sh 2022-10-15
-```
-
-### From processed data with stages
-
-```bash
-LONG_TRAIN=1 CLIP_NORM=10 STAGE=all USE_ADAPTER=1 ./scripts/run_from_processed.sh 2022-10-15
-STAGE=gradmeta ./scripts/run_from_processed.sh 2022-10-15 --no_private
-STAGE=adapter ./scripts/run_from_processed.sh 2022-10-15 --epochs 50
-```
-
-### For thesis experiments
-
-- Set `STAGE=gradmeta` / `adapter` / `together` to isolate each phase.
-- Use `--long_train` + `CLIP_NORM` for the extended regimen used in your recent runs.
-- Use `--minimal_outputs` to keep only `run_tag`-specific artifacts when writing to limited storage.
-
-</details>
-
-<details>
-<summary>**4) Outputs & artifacts (where to look for results)**</summary>
-
-Runs write into `outputs/nyc/<ASOF>/` (matching `run_tag`). Files:
-
-- `param_model.pt`, `error_adapter.pt` (if adapter stage ran).
-- `forecast_<N>d_w<W>.csv/.npy` _and_ `forecast_<N>d_w<W>_<run_tag>.csv/.npy`.
-- `fit_train_test_<run_tag>.csv` _and_ `.png` (unless `--minimal_outputs`).
-- `metrics_<run_tag>.json` and `metrics_summary.csv` (appended each run; use for thesis tables).`metrics_summary.csv` is the canonical comparison table with RMSE/MAE/MAPE/seed info.
-
-Logs print stage progress and warnings if predictions exceed 1e7 (blow-up guard). Always verify the PNG at `outputs/nyc/<ASOF>/fit_train_test_<run_tag>.png` before writing your thesis figures. Forecast CSVs now include `day_idx`, `pred_cases`, `smooth_cases_window`, and `truth_cases`.
-
-</details>
-
-<details>
-<summary>**5) Bugs encountered + fixes applied (record for your thesis appendix)**summary>
-
-- **Bogotá-style in-network scaling**: epi params, seed vector, and beta matrix now scale inside `CalibNNTwoEncoderThreeOutputs` via sigmoid + configurable min/max buffers (`nyc.param_min/max`, `nyc.seed_min/max`, `nyc.beta_min/max`). No more external `[0,1]` clamping forcing wrong scales.
-- **Seed semantics**: `MetapopulationSEIRMBeta` now honors `nyc.seed_mode` (`fraction` vs `count`), clamps to `[0, num_agents]`, and avoids tensor vs scalar `clamp` by separating `min`/`max` operations for compatibility.
-- **Private tensor alignment**: `align_private_tensor` now right-aligns to match train/test windows and offers normalization modes `none`, `zscore_time`, `l2_time` (default `zscore_time`). Stats are logged when `--self_check` is on.
-- **Staged training**: added three loops (GradMeta → Adapter → Together), stage-specific checkpoints, adapter residual loss options (`mse` or `rmse`), freezing nil weights, long-train multipliers, blow-up guard, and stage-specific metrics written to JSON.
-- **Constraint logic**: `forward_simulator` now clamps epi params to configurable min/max rather than `[0,1]`, ensuring consistent magnitudes after in-network scaling.
-- **Scripts & documentation**: new CLI flags (`STAGE`, `ADAPTER_LOSS`, `LONG_TRAIN`, etc.), README reorganized around staged workflow, and helper scripts updated to pass the new flags automatically.
-
-</details>
-
-<details>
-<summary>**6) Thesis recommendations & next steps**</summary>
-
-1. Run `public_only` and `public_opentable` with identical seeds/epochs, compare `metrics_summary.csv`, and cite the RMSE/MAE gap.
-2. Keep the `fit_train_test_<run_tag>.png` from `outputs/nyc/<ASOF>/` for plots; it shows train/test splits plus predictions/ground truth.
-3. Save the JSON metrics (`metrics_<run_tag>.json`) per run and include the `best_loss_gradmeta/adapter/together` fields for transparency.
-4. If you need smaller runs, set `--stage gradmeta` and `--epochs_gradmeta 50` for a demo without exploding the pipeline.
-
-</details>
-
-<details>
-<summary>**7) Data inventory (tables + scripts)**</summary>
-
-| Dataset                                                  | Rows   | Columns | Description                                                                                  | Generated by                                                      |
-| -------------------------------------------------------- | ------ | ------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `data/processed/nyc_master_daily.csv`                    | 960    | 13      | Combined cases, hospitalizations, deaths, mobility indexes, scope trends, and `total_cases`. | `scripts/build_data.sh`                                           |
-| `data/processed/opentable_yoy_daily.csv`                 | 170    | 2       | OpenTable YoY diners (date + `yoy_seated_diner`).                                            | `scripts/build_private_opentable_tensor.py` (preprocessing steps) |
-| `data/processed/online/train_<ASOF>_history<WINDOW_DAYS>_w<W>.csv` | ~142   | 12      | Train window: `cases_raw`, `cases`, and `pub_0`…`pub_9` (history defaults to 170 days).     | `scripts/prepare_online_nyc.py`                                   |
-| `data/processed/online/test_<ASOF>_history<WINDOW_DAYS>_w<W>.csv`  | 28     | 12      | Test window, same schema as train.                                                           | `scripts/prepare_online_nyc.py`                                   |
-| `data/processed/private/opentable_private_lap_<ASOF>.pt` | 16 × T |         | Per-patch OpenTable tensor, zero-padded + normalized (`align_private_tensor`).               | `scripts/build_private_opentable_tensor.py`                       |
-
-- `scripts/prepare_online_nyc.py` extracts numeric public covariates, writes both `cases_raw` and `cases`, and `SeqDataset` excludes both case columns before building model features.
-- `align_private_tensor` in `src/nyc_gradmeta/models/forecasting_gradmeta_nyc.py` right-aligns the loaded tensor, pads to match `[train + test]`, and applies `private_norm` (`zscore_time` by default).
-- `scripts/build_private_opentable_tensor.py` also prints the tensor shape/date range; the final `.pt` is `[16, T]` and loaded via `torch.load` (see training script lines referencing `private_dir`).
-
-</details>
+- add the final Dwork & Roth citation used in the thesis bibliography
+- implement Condition C (DP OpenTable path) if it becomes part of the thesis deliverable
