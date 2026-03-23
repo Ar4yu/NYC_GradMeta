@@ -492,12 +492,10 @@ Conceptual reference for this plan in the thesis narrative: Dwork and Roth on di
   - the simulator loop is sequential over daily timesteps
   - GPU helps with tensor ops, but speedup may be limited because the mechanistic simulator still advances day by day and the effective batch size is one long sequence
 
-## 11) Citation Block
-
-Use these as the repo-facing citation placeholders for the thesis. Where the repo does not contain enough information to verify a full citation, the entry is marked `TBD`.
+## 11) Citations
 
 - Guan, Z., Zhao, Z., Tian, F., Nguyen, D., Bhattacharjee, P., Tandon, R., Prakash, B. A., and Vullikanti, A. "A Framework for Multi-source Privacy Preserving Epidemic Analysis," arXiv:2506.22342, 2025. Available: <https://arxiv.org/abs/2506.22342>. Accessed: Mar. 4, 2026.
-- Dwork & Roth differential privacy book: `TBD exact bibliography entry from the thesis reference manager`.
+- Dwork, C., and Roth, A. The Algorithmic Foundations of Differential Privacy. Hanover, MA, USA: Now Publishers, 2014.
 - Patchflow contact matrix repository: <https://github.com/nssac/patchflow-data>
 - NYC DOHMH daily counts dataset: <https://data.cityofnewyork.us/Health/COVID-19-Daily-Counts-of-Cases-Hospitalizations-an/rc75-m7u3/about_data>
 - Kaggle OpenTable reservation dataset: <https://www.kaggle.com/datasets/pizacd/opentable-reservation-data>
@@ -507,5 +505,4 @@ Use these as the repo-facing citation placeholders for the thesis. Where the rep
 
 ## TODOs
 
-- add the final Dwork & Roth citation used in the thesis bibliography
 - implement Condition C (DP OpenTable path) if it becomes part of the thesis deliverable
