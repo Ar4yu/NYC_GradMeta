@@ -5,6 +5,8 @@ import numpy as np
 import torch
 import json
 
+from nyc_gradmeta.utils import private_artifact_stem
+
 
 def load_config(cfg_path: str) -> dict:
     with open(cfg_path, "r", encoding="utf-8") as f:
@@ -47,6 +49,27 @@ def load_master_dates(master_path: Path, asof: pd.Timestamp) -> pd.DatetimeIndex
     return pd.DatetimeIndex(master_df["date"])
 
 
+def load_observed_source(
+    csv_path: Path,
+    value_col: str,
+    asof: pd.Timestamp,
+) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp]:
+    df = pd.read_csv(csv_path)
+    if "date" not in df.columns:
+        raise ValueError(f"{csv_path} must include 'date'.")
+    if value_col not in df.columns:
+        raise ValueError(f"{csv_path} missing '{value_col}'. Columns={df.columns.tolist()}")
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+    observed = df[df[value_col].notna()].copy()
+    if observed.empty:
+        raise ValueError(f"{csv_path} has no observed rows for '{value_col}'.")
+    observed_start = observed["date"].iloc[0]
+    observed_end = observed["date"].iloc[-1]
+    source = observed[observed["date"] <= asof][["date", value_col]].copy()
+    return source, observed_start, observed_end
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/nyc.json")
@@ -60,6 +83,14 @@ def main():
         "--opentable_col",
         default="opentable",
         help="Column name for the OpenTable signal (in opentable_csv or master_daily_csv).",
+    )
+    ap.add_argument(
+        "--matched_window_with_opentable",
+        action="store_true",
+        help=(
+            "Clip the private tensor to the true observed public/OpenTable overlap window. "
+            "This is the fair A/B experiment mode."
+        ),
     )
     args = ap.parse_args()
 
@@ -75,19 +106,17 @@ def main():
     pop_share = load_population_share(pop_path, P)
 
     asof = pd.to_datetime(args.asof)
-    full_dates = load_master_dates(master_path, asof)
+    full_dates_all = load_master_dates(master_path, asof)
+    public_start = full_dates_all.min()
+    public_end = full_dates_all.max()
 
     # Load OpenTable series
     if args.opentable_csv is not None:
-        ot = pd.read_csv(args.opentable_csv)
-        if "date" not in ot.columns:
-            raise ValueError("OpenTable CSV must have 'date' column.")
-        ot["date"] = pd.to_datetime(ot["date"])
-        if args.opentable_col not in ot.columns:
-            raise ValueError(f"OpenTable CSV missing column '{args.opentable_col}'.")
-        ot = ot.sort_values("date")
-        ot = ot[ot["date"] <= asof].reset_index(drop=True)
-        source = ot[["date", args.opentable_col]].copy()
+        source, observed_start, observed_end = load_observed_source(
+            Path(args.opentable_csv),
+            args.opentable_col,
+            asof,
+        )
     else:
         # Try to source from master file (if you merged it there already)
         df = pd.read_csv(master_path)
@@ -101,15 +130,44 @@ def main():
                 f"master_daily_csv missing '{args.opentable_col}'. "
                 f"Either add it to master, or pass --opentable_csv."
             )
-        source = df[["date", args.opentable_col]].copy()
+        observed = df[df[args.opentable_col].notna()].copy()
+        if observed.empty:
+            raise ValueError(f"master_daily_csv has no observed values for '{args.opentable_col}'.")
+        observed_start = observed["date"].iloc[0]
+        observed_end = observed["date"].iloc[-1]
+        source = observed[["date", args.opentable_col]].copy()
+
+    requested_asof = asof
+    if args.matched_window_with_opentable:
+        joint_start = max(public_start, observed_start)
+        joint_end = min(public_end, observed_end, requested_asof)
+        if joint_end < joint_start:
+            raise ValueError(
+                f"No joint public/OpenTable overlap for requested asof={args.asof}. "
+                f"public=[{public_start.date()}, {public_end.date()}], "
+                f"opentable=[{observed_start.date()}, {observed_end.date()}]."
+            )
+        full_dates = full_dates_all[(full_dates_all >= joint_start) & (full_dates_all <= joint_end)]
+        actual_asof = joint_end
+    else:
+        if requested_asof > observed_end:
+            raise ValueError(
+                f"Requested ASOF {requested_asof.date()} exceeds the last observed OpenTable date "
+                f"{observed_end.date()}. Refusing to build synthetic future OpenTable data. "
+                "Use --matched_window_with_opentable to clip to the true observed overlap window."
+            )
+        full_dates = full_dates_all
+        actual_asof = requested_asof
+        joint_start = public_start
+        joint_end = requested_asof
 
     source = source.drop_duplicates("date").set_index("date").sort_index()
     aligned = source.reindex(full_dates)
     observed_days = int(aligned[args.opentable_col].notna().sum())
     missing_days = len(aligned) - observed_days
 
-    # Fill missing dates so tensor length aligns with public series length.
-    # Interpolate over time, then forward/back fill residual gaps, then zero any remaining.
+    # Fill only inside the observed window used for this experiment.
+    # This allows interpolation for interior gaps, but never carries OpenTable into future dates.
     aligned[args.opentable_col] = (
         aligned[args.opentable_col]
         .astype(float)
@@ -136,13 +194,41 @@ def main():
 
     tensor = torch.tensor(private, dtype=torch.float32)  # [P, T]
 
-    out_path = private_dir / f"opentable_private_lap_{args.asof}.pt"
+    out_base = private_artifact_stem(
+        args.asof,
+        matched_window_with_opentable=args.matched_window_with_opentable,
+    )
+    out_path = private_dir / f"{out_base}.pt"
     torch.save(tensor, out_path)
+    meta = {
+        "requested_asof": args.asof,
+        "actual_asof": str(actual_asof.date()),
+        "matched_window_with_opentable": bool(args.matched_window_with_opentable),
+        "laplace_noise_applied": False,
+        "public_start": str(public_start.date()),
+        "public_end": str(public_end.date()),
+        "opentable_observed_start": str(observed_start.date()),
+        "opentable_observed_end": str(observed_end.date()),
+        "joint_start": str(joint_start.date()),
+        "joint_end": str(joint_end.date()),
+        "observed_days_in_tensor_window": observed_days,
+        "filled_days_in_tensor_window": missing_days,
+        "tensor_shape": list(tensor.shape),
+    }
+    meta_path = private_dir / f"{out_base}.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
 
     print("Wrote:", out_path)
+    print("Metadata:", meta_path)
     print("Tensor shape:", tuple(tensor.shape), "[num_patch, T]")
     print("Date range:", full_dates[0].date(), "→", full_dates[-1].date())
     print("Observed OpenTable days before fill:", observed_days)
+    print("Filled days inside experiment window:", missing_days)
+    if args.matched_window_with_opentable:
+        print("[info] Matched-window mode enabled. No OpenTable dates beyond the observed range were used.")
+    else:
+        print("[info] Non-matched mode used only because requested ASOF stayed within observed OpenTable dates.")
 
 
 if __name__ == "__main__":

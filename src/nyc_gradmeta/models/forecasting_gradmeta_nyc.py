@@ -30,7 +30,13 @@ from nyc_gradmeta.sim.model_utils import (
     ErrorCorrectionAdapter,
     MetapopulationSEIRMBeta,
 )
-from nyc_gradmeta.utils import online_artifact_stem, series_to_supervised, smoothing_label
+from nyc_gradmeta.utils import (
+    online_artifact_stem,
+    private_artifact_stem,
+    run_tag_for_mode,
+    series_to_supervised,
+    smoothing_label,
+)
 
 
 PARAM_ORDER = ("kappa", "symprob", "epsilon", "alpha", "gamma", "delta", "mor")
@@ -260,21 +266,23 @@ def save_fit_plot(
     y_pred_full: np.ndarray,
     split_idx: int,
     title: str,
+    subtitle: str,
     truth_label: str,
 ) -> None:
     x = np.arange(len(y_true_full))
-    plt.figure(figsize=(12, 5))
-    plt.plot(x, y_true_full, label=f"Truth ({truth_label})", color="black", linewidth=1.7)
-    plt.plot(x, y_pred_full, label=f"Predicted ({truth_label})", color="tab:blue", linewidth=1.7)
-    plt.axvline(split_idx - 0.5, color="tab:red", linestyle="--", linewidth=1.5, label="Train/Test split")
-    plt.xlabel("Day index")
-    plt.ylabel("Daily cases")
-    plt.title(title)
-    plt.legend()
-    plt.tight_layout()
+    fig, ax = plt.subplots(figsize=(13, 6))
+    ax.plot(x, y_true_full, label=f"Truth ({truth_label})", color="black", linewidth=1.7)
+    ax.plot(x, y_pred_full, label=f"Predicted ({truth_label})", color="tab:blue", linewidth=1.7)
+    ax.axvline(split_idx - 0.5, color="tab:red", linestyle="--", linewidth=1.5, label="Train/Test split")
+    ax.set_xlabel("Day index")
+    ax.set_ylabel("Daily cases")
+    ax.legend(loc="upper right")
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
+    fig.text(0.5, 0.935, subtitle, ha="center", va="top", fontsize=10, color="dimgray")
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=200)
-    plt.close()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
 
 
 def assert_model_outputs(
@@ -415,6 +423,11 @@ def main():
         action="store_true",
         help="If set, ignore OpenTable private tensor and use zeros [P,T,1].",
     )
+    ap.add_argument(
+        "--matched_window_with_opentable",
+        action="store_true",
+        help="Use matched-window artifacts built from the true observed public/OpenTable overlap.",
+    )
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -474,9 +487,22 @@ def main():
     private_dir = Path(nyc["paths"]["private_dir"])
     target_name = "cases" if args.main_target == "smoothed" else "cases_raw"
     smoothing_desc = smoothing_label(args.smooth_cases_window)
-    train_csv = online_dir / f"{online_artifact_stem('train', args.asof, args.window_days, args.smooth_cases_window)}.csv"
-    test_csv = online_dir / f"{online_artifact_stem('test', args.asof, args.window_days, args.smooth_cases_window)}.csv"
-    private_pt = private_dir / f"opentable_private_lap_{args.asof}.pt"
+    train_csv = online_dir / (
+        f"{online_artifact_stem('train', args.asof, args.window_days, args.smooth_cases_window, matched_window_with_opentable=args.matched_window_with_opentable)}.csv"
+    )
+    test_csv = online_dir / (
+        f"{online_artifact_stem('test', args.asof, args.window_days, args.smooth_cases_window, matched_window_with_opentable=args.matched_window_with_opentable)}.csv"
+    )
+    split_info_path = online_dir / (
+        f"{online_artifact_stem('split_info', args.asof, args.window_days, args.smooth_cases_window, matched_window_with_opentable=args.matched_window_with_opentable)}.json"
+    )
+    if not split_info_path.exists():
+        raise FileNotFoundError(f"Split metadata not found: {split_info_path}")
+    with open(split_info_path, "r", encoding="utf-8") as f:
+        split_info = json.load(f)
+    private_pt = private_dir / (
+        f"{private_artifact_stem(args.asof, matched_window_with_opentable=args.matched_window_with_opentable)}.pt"
+    )
     out_dir = Path("outputs") / "nyc" / args.asof
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -499,7 +525,12 @@ def main():
 
     use_private = not args.no_private
     mode = "public_opentable" if use_private else "public_only"
-    run_tag = f"{mode}{'_adapter' if args.use_adapter else ''}_w{args.smooth_cases_window}"
+    run_tag = run_tag_for_mode(
+        mode=mode,
+        use_adapter=bool(args.use_adapter),
+        smooth_cases_window=args.smooth_cases_window,
+        matched_window_with_opentable=args.matched_window_with_opentable,
+    )
     private_full = None
     if use_private:
         if not private_pt.exists():
@@ -908,13 +939,21 @@ def main():
 
     train_metrics = compute_metrics(y_train_used_np, preds_total_np[:training_num_steps])
     test_metrics = compute_metrics(y_test_np, preds_total_np[training_num_steps:])
+    train_dates = train_dataset.dates
+    test_dates = test_dataset.dates
+    if train_dates is None or test_dates is None:
+        raise ValueError("Prepared train/test CSVs must include a date column for artifact labeling.")
+    train_dates = pd.to_datetime(train_dates)
+    test_dates = pd.to_datetime(test_dates)
+    train_dates_used = train_dates.iloc[:training_num_steps].reset_index(drop=True)
+    test_dates = test_dates.reset_index(drop=True)
     metrics = {
         "asof": args.asof,
         "mode": mode,
         "run_tag": run_tag,
         "target_name": target_name,
         "smooth_cases_window": int(args.smooth_cases_window),
-        "window_days": int(args.window_days),
+        "window_days": int(split_info.get("window_days", args.window_days)),
         "target_definition": smoothing_desc,
         "seed": seed,
         "epochs_gradmeta": epochs_gradmeta,
@@ -935,6 +974,15 @@ def main():
         "train_len": int(training_num_steps),
         "test_len": int(test_horizon),
         "private_start_idx": int(private_start_idx),
+        "matched_window_with_opentable": bool(args.matched_window_with_opentable),
+        "window_start": split_info.get("window_start"),
+        "window_end": split_info.get("window_end"),
+        "train_start": split_info.get("train_start"),
+        "train_end": split_info.get("train_end"),
+        "test_start": split_info.get("test_start"),
+        "test_end": split_info.get("test_end"),
+        "actual_asof": split_info.get("actual_asof"),
+        "requested_asof": split_info.get("requested_asof", args.asof),
         "train_metrics": train_metrics,
         "test_metrics": test_metrics,
     }
@@ -942,6 +990,7 @@ def main():
     forecast_days = int(test_horizon)
     forecast_df = pd.DataFrame(
         {
+            "date": test_dates.dt.strftime("%Y-%m-%d").to_numpy(),
             "day_idx": np.arange(forecast_days, dtype=int),
             "pred_cases": forecast,
             "smooth_cases_window": np.full(forecast_days, int(args.smooth_cases_window), dtype=int),
@@ -949,7 +998,7 @@ def main():
         }
     )
     forecast_base = f"forecast_{forecast_days}d_w{args.smooth_cases_window}"
-    if args.minimal_outputs:
+    if args.minimal_outputs or args.matched_window_with_opentable:
         np.save(out_dir / f"{forecast_base}_{run_tag}.npy", forecast)
         forecast_df.to_csv(out_dir / f"{forecast_base}_{run_tag}.csv", index=False)
     else:
@@ -960,6 +1009,13 @@ def main():
 
     fit_df = pd.DataFrame(
         {
+            "date": pd.concat(
+                [
+                    pd.Series(train_dates_used.dt.strftime("%Y-%m-%d").to_numpy()),
+                    pd.Series(test_dates.dt.strftime("%Y-%m-%d").to_numpy()),
+                ],
+                ignore_index=True,
+            ),
             "day_idx": np.arange(len(y_true_full), dtype=int),
             "split": np.where(np.arange(len(y_true_full)) < training_num_steps, "train", "test"),
             "truth_cases": y_true_full,
@@ -975,7 +1031,13 @@ def main():
             y_true_full=y_true_full,
             y_pred_full=preds_total_np,
             split_idx=training_num_steps,
-            title=f"NYC GradMeta fit ({run_tag}, ASOF={args.asof}, {smoothing_desc})",
+            title=f"NYC GradMeta Fit: {run_tag}",
+            subtitle=(
+                f"Window {split_info.get('window_start')} to {split_info.get('window_end')} | "
+                f"Train {split_info.get('train_start')} to {split_info.get('train_end')} | "
+                f"Test {split_info.get('test_start')} to {split_info.get('test_end')} | "
+                f"Requested ASOF {args.asof} | {smoothing_desc}"
+            ),
             truth_label=smoothing_desc,
         )
 
@@ -996,7 +1058,14 @@ def main():
             "adapter_target": args.adapter_target,
             "target_name": target_name,
             "smooth_cases_window": int(args.smooth_cases_window),
-            "window_days": int(args.window_days),
+            "window_days": int(split_info.get("window_days", args.window_days)),
+            "matched_window_with_opentable": bool(args.matched_window_with_opentable),
+            "window_start": split_info.get("window_start"),
+            "window_end": split_info.get("window_end"),
+            "train_start": split_info.get("train_start"),
+            "train_end": split_info.get("train_end"),
+            "test_start": split_info.get("test_start"),
+            "test_end": split_info.get("test_end"),
             "train_rmse": train_metrics["rmse"],
             "train_mae": train_metrics["mae"],
             "test_rmse": test_metrics["rmse"],

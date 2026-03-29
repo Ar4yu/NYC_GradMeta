@@ -1,0 +1,18 @@
+{
+  "requested_asof": "2022-10-15",
+  "actual_asof": "2020-08-05",
+  "matched_window_with_opentable": true,
+  "laplace_noise_applied": false,
+  "public_start": "2020-02-29",
+  "public_end": "2022-10-15",
+  "opentable_observed_start": "2020-02-18",
+  "opentable_observed_end": "2020-08-05",
+  "joint_start": "2020-02-29",
+  "joint_end": "2020-08-05",
+  "observed_days_in_tensor_window": 159,
+  "filled_days_in_tensor_window": 0,
+  "tensor_shape": [
+    16,
+    159
+  ]
+}

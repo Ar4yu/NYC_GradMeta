@@ -42,6 +42,7 @@ LONG_TRAIN="${LONG_TRAIN:-0}"
 CLIP_NORM="${CLIP_NORM:-}"
 SMOOTH_CASES_WINDOW="${SMOOTH_CASES_WINDOW:-0}"
 WINDOW_DAYS="${WINDOW_DAYS:-170}"
+MATCHED_WINDOW_WITH_OPENTABLE="${MATCHED_WINDOW_WITH_OPENTABLE:-0}"
 if [ -x ".venv/bin/python" ]; then
   PYTHON="${PYTHON:-.venv/bin/python}"
 else
@@ -55,18 +56,35 @@ if [[ "$SKIP_PREP" -eq 0 ]]; then
   ./scripts/build_data.sh
 
   echo "==> Step 2: build OpenTable private tensor"
-  "$PYTHON" scripts/build_private_opentable_tensor.py \
-    --config "${CFG}" \
-    --asof "${ASOF}" \
-    --opentable_csv "data/processed/opentable_yoy_daily.csv" \
+  OT_ARGS=(
+    scripts/build_private_opentable_tensor.py
+    --config "${CFG}"
+    --asof "${ASOF}"
+    --opentable_csv "data/processed/opentable_yoy_daily.csv"
     --opentable_col "yoy_seated_diner"
+  )
+  if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
+    OT_ARGS+=( --matched_window_with_opentable )
+  fi
+  "$PYTHON" "${OT_ARGS[@]}"
 
   echo "==> Step 3: prepare online train/test CSVs"
-  "$PYTHON" scripts/prepare_online_nyc.py \
-    --config "${CFG}" \
-    --asof "${ASOF}" \
-    --window_days "${WINDOW_DAYS}" \
-    --smooth_cases_window "${SMOOTH_CASES_WINDOW}"
+  if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
+    "$PYTHON" scripts/prepare_online_nyc.py \
+      --config "${CFG}" \
+      --asof "${ASOF}" \
+      --window_days "${WINDOW_DAYS}" \
+      --smooth_cases_window "${SMOOTH_CASES_WINDOW}" \
+      --matched_window_with_opentable \
+      --opentable_csv "data/processed/opentable_yoy_daily.csv" \
+      --opentable_col "yoy_seated_diner"
+  else
+    "$PYTHON" scripts/prepare_online_nyc.py \
+      --config "${CFG}" \
+      --asof "${ASOF}" \
+      --window_days "${WINDOW_DAYS}" \
+      --smooth_cases_window "${SMOOTH_CASES_WINDOW}"
+  fi
 else
   echo "==> Skipping prep steps (build_data/build_private/prepare_online)"
 fi
@@ -80,6 +98,9 @@ TRAIN_ARGS=(
   --window_days "${WINDOW_DAYS}"
   --smooth_cases_window "${SMOOTH_CASES_WINDOW}"
 )
+if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
+  TRAIN_ARGS+=( --matched_window_with_opentable )
+fi
 if [ "${USE_ADAPTER}" = "1" ]; then
   TRAIN_ARGS+=( --use_adapter )
 fi

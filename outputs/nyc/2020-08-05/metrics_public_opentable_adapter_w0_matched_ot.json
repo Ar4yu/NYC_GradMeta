@@ -1,0 +1,51 @@
+{
+  "asof": "2020-08-05",
+  "mode": "public_opentable",
+  "run_tag": "public_opentable_adapter_w0_matched_ot",
+  "target_name": "cases",
+  "smooth_cases_window": 0,
+  "window_days": 159,
+  "target_definition": "raw daily cases",
+  "seed": 0,
+  "epochs_gradmeta": 25000,
+  "epochs_adapter": 5000,
+  "epochs_together": 5000,
+  "best_loss_gradmeta": 316.9878845214844,
+  "best_loss_adapter": 98745.796875,
+  "best_loss_together": 314.2212829589844,
+  "requested_stage": "all",
+  "stages_ran": [
+    "gradmeta",
+    "adapter",
+    "together"
+  ],
+  "use_private": true,
+  "use_adapter": true,
+  "adapter_loss": "mse",
+  "enforce_constraints": true,
+  "adapter_target": "smoothed",
+  "seed_mode": "fraction",
+  "private_norm": "zscore_time",
+  "train_len": 131,
+  "test_len": 28,
+  "private_start_idx": 0,
+  "matched_window_with_opentable": true,
+  "window_start": "2020-02-29",
+  "window_end": "2020-08-05",
+  "train_start": "2020-02-29",
+  "train_end": "2020-07-08",
+  "test_start": "2020-07-09",
+  "test_end": "2020-08-05",
+  "actual_asof": "2020-08-05",
+  "requested_asof": "2020-08-05",
+  "train_metrics": {
+    "rmse": 398.01615382740647,
+    "mae": 256.26605284487016,
+    "mape": 44.32741411708122
+  },
+  "test_metrics": {
+    "rmse": 191.01385974356987,
+    "mae": 167.18595123291016,
+    "mape": 70.4824134111932
+  }
+}

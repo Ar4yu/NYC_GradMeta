@@ -34,6 +34,19 @@ def parse_numeric_column(series: pd.Series, col_name: str) -> pd.Series:
     return parsed.fillna(0.0)
 
 
+def load_observed_date_range(csv_path: Path, value_col: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    df = pd.read_csv(csv_path)
+    if "date" not in df.columns:
+        raise ValueError(f"{csv_path} must include a 'date' column.")
+    if value_col not in df.columns:
+        raise ValueError(f"{csv_path} must include '{value_col}'. Columns={df.columns.tolist()}")
+    df["date"] = pd.to_datetime(df["date"])
+    observed = df.dropna(subset=[value_col]).sort_values("date")
+    if observed.empty:
+        raise ValueError(f"{csv_path} has no observed rows for '{value_col}'.")
+    return observed["date"].iloc[0], observed["date"].iloc[-1]
+
+
 def build_public_features(
     df: pd.DataFrame,
     mode: str,
@@ -114,6 +127,24 @@ def main():
         default=170,
         help="Use only the last N days up to ASOF before splitting. Defaults to 170 to match OpenTable coverage.",
     )
+    ap.add_argument(
+        "--matched_window_with_opentable",
+        action="store_true",
+        help=(
+            "Use the true observed public/OpenTable overlap window for a fair A/B experiment. "
+            "This clips the window to the joint overlap and ignores --window_days."
+        ),
+    )
+    ap.add_argument(
+        "--opentable_csv",
+        default="data/processed/opentable_yoy_daily.csv",
+        help="Processed OpenTable CSV used to define the matched overlap window.",
+    )
+    ap.add_argument(
+        "--opentable_col",
+        default="yoy_seated_diner",
+        help="OpenTable column used to determine the observed overlap range.",
+    )
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -158,19 +189,54 @@ def main():
     )
     out = pd.concat(
         [
-            df[["cases_raw", "cases"]].astype(float).reset_index(drop=True),
+            df[["date", "cases_raw", "cases"]].reset_index(drop=True),
             feature_df.reset_index(drop=True),
         ],
         axis=1,
     )
+    out["cases_raw"] = out["cases_raw"].astype(float)
+    out["cases"] = out["cases"].astype(float)
     if out.isna().any().any():
         raise ValueError("Prepared online dataframe contains NaNs.")
 
     # Restrict to <= ASOF before splitting.
     asof = pd.to_datetime(args.asof)
 
+    actual_asof = asof
+    matched_info: dict[str, object] = {
+        "matched_window_with_opentable": bool(args.matched_window_with_opentable),
+    }
+    if args.matched_window_with_opentable:
+        opentable_path = Path(args.opentable_csv)
+        ot_start, ot_end = load_observed_date_range(opentable_path, args.opentable_col)
+        public_start = df["date"].min()
+        public_end = df["date"].max()
+        joint_start = max(public_start, ot_start)
+        joint_end = min(public_end, ot_end, asof)
+        if joint_end < joint_start:
+            raise ValueError(
+                f"No joint public/OpenTable overlap for requested asof={args.asof}. "
+                f"public=[{public_start.date()}, {public_end.date()}], "
+                f"opentable=[{ot_start.date()}, {ot_end.date()}]."
+            )
+        actual_asof = joint_end
+        matched_info.update(
+            {
+                "requested_asof": args.asof,
+                "actual_asof": str(actual_asof.date()),
+                "public_start": str(public_start.date()),
+                "public_end": str(public_end.date()),
+                "opentable_observed_start": str(ot_start.date()),
+                "opentable_observed_end": str(ot_end.date()),
+                "joint_start": str(joint_start.date()),
+                "joint_end": str(joint_end.date()),
+                "requested_window_days": int(args.window_days),
+                "window_mode": "full_joint_overlap",
+            }
+        )
+
     # Restrict to <= asof
-    mask_upto = df["date"] <= asof
+    mask_upto = df["date"] <= actual_asof
     df_upto = df.loc[mask_upto].copy()
     out_upto = out.loc[mask_upto].reset_index(drop=True)
     if df_upto.empty:
@@ -182,32 +248,54 @@ def main():
     if not (diffs_upto == 1).all():
         raise ValueError("Rows up to asof are not daily contiguous.")
 
-    if args.window_days < 2:
-        raise ValueError("--window_days must be >= 2.")
-    start_idx = max(0, len(out_upto) - int(args.window_days))
-    out_upto = out_upto.iloc[start_idx:].reset_index(drop=True)
-    dates_upto = dates_upto.iloc[start_idx:].reset_index(drop=True)
+    if args.matched_window_with_opentable:
+        joint_start = pd.to_datetime(matched_info["joint_start"])
+        joint_mask = dates_upto >= joint_start
+        out_upto = out_upto.loc[joint_mask].reset_index(drop=True)
+        dates_upto = dates_upto.loc[joint_mask].reset_index(drop=True)
+        actual_window_days = int(len(out_upto))
+    else:
+        if args.window_days < 2:
+            raise ValueError("--window_days must be >= 2.")
+        start_idx = max(0, len(out_upto) - int(args.window_days))
+        out_upto = out_upto.iloc[start_idx:].reset_index(drop=True)
+        dates_upto = dates_upto.iloc[start_idx:].reset_index(drop=True)
+        actual_window_days = int(len(out_upto))
     if len(out_upto) < 2:
         raise ValueError("Need at least 2 rows after ASOF/window filtering to split train/test.")
 
     if args.split_mode == "horizon":
         test_days = int(args.test_days) if args.test_days is not None else int(nyc["test_days"])
-        test_start = asof - pd.Timedelta(days=test_days - 1)
-        test_mask = (dates_upto >= test_start) & (dates_upto <= asof)
+        if len(out_upto) <= test_days:
+            raise ValueError(
+                f"Need more than {test_days} rows in the experiment window; found {len(out_upto)}."
+            )
+        test_start = dates_upto.iloc[-test_days]
+        test_end = dates_upto.iloc[-1]
+        test_mask = dates_upto >= test_start
         if test_mask.sum() != test_days:
             raise ValueError(
-                f"Expected exactly {test_days} test days between {test_start.date()} and {asof.date()}, "
+                f"Expected exactly {test_days} test days between {test_start.date()} and {test_end.date()}, "
                 f"found {int(test_mask.sum())}. Check missing dates in master_daily_csv."
             )
         train_df = out_upto.loc[~test_mask].reset_index(drop=True)
         test_df = out_upto.loc[test_mask].reset_index(drop=True)
+        train_dates = dates_upto.loc[~test_mask].reset_index(drop=True)
+        test_dates = dates_upto.loc[test_mask].reset_index(drop=True)
         split_info = {
             "split_mode": "horizon",
             "test_days": test_days,
             "train_days": int(len(train_df)),
-            "window_days": args.window_days,
+            "window_days": actual_window_days,
             "smooth_cases_window": int(args.smooth_cases_window),
-            "asof": args.asof,
+            "requested_asof": args.asof,
+            "actual_asof": str(actual_asof.date()),
+            "window_start": str(dates_upto.iloc[0].date()),
+            "window_end": str(dates_upto.iloc[-1].date()),
+            "train_start": str(train_dates.iloc[0].date()),
+            "train_end": str(train_dates.iloc[-1].date()),
+            "test_start": str(test_dates.iloc[0].date()),
+            "test_end": str(test_dates.iloc[-1].date()),
         }
     else:
         ratio = float(args.train_ratio)
@@ -218,27 +306,62 @@ def main():
         train_n = max(1, min(train_n, n_total - 1))
         train_df = out_upto.iloc[:train_n].reset_index(drop=True)
         test_df = out_upto.iloc[train_n:].reset_index(drop=True)
+        train_dates = dates_upto.iloc[:train_n].reset_index(drop=True)
+        test_dates = dates_upto.iloc[train_n:].reset_index(drop=True)
         split_info = {
             "split_mode": "ratio",
             "train_ratio": ratio,
             "train_days": int(len(train_df)),
             "test_days": int(len(test_df)),
-            "window_days": args.window_days,
+            "window_days": actual_window_days,
             "smooth_cases_window": int(args.smooth_cases_window),
-            "asof": args.asof,
+            "requested_asof": args.asof,
+            "actual_asof": str(actual_asof.date()),
+            "window_start": str(dates_upto.iloc[0].date()),
+            "window_end": str(dates_upto.iloc[-1].date()),
+            "train_start": str(train_dates.iloc[0].date()),
+            "train_end": str(train_dates.iloc[-1].date()),
+            "test_start": str(test_dates.iloc[0].date()),
+            "test_end": str(test_dates.iloc[-1].date()),
         }
 
+    split_info.update(matched_info)
+
     # Save
-    suffix_train = online_artifact_stem("train", args.asof, args.window_days, args.smooth_cases_window)
-    suffix_test = online_artifact_stem("test", args.asof, args.window_days, args.smooth_cases_window)
+    suffix_train = online_artifact_stem(
+        "train",
+        args.asof,
+        args.window_days,
+        args.smooth_cases_window,
+        matched_window_with_opentable=args.matched_window_with_opentable,
+    )
+    suffix_test = online_artifact_stem(
+        "test",
+        args.asof,
+        args.window_days,
+        args.smooth_cases_window,
+        matched_window_with_opentable=args.matched_window_with_opentable,
+    )
     train_path = online_dir / f"{suffix_train}.csv"
     test_path = online_dir / f"{suffix_test}.csv"
     train_df.to_csv(train_path, index=False)
     test_df.to_csv(test_path, index=False)
-    map_suffix = online_artifact_stem("public_feature_map", args.asof, args.window_days, args.smooth_cases_window)
+    map_suffix = online_artifact_stem(
+        "public_feature_map",
+        args.asof,
+        args.window_days,
+        args.smooth_cases_window,
+        matched_window_with_opentable=args.matched_window_with_opentable,
+    )
     map_path = online_dir / f"{map_suffix}.csv"
     pd.DataFrame(mapping, columns=["pub_col", "source_col"]).to_csv(map_path, index=False)
-    split_suffix = online_artifact_stem("split_info", args.asof, args.window_days, args.smooth_cases_window)
+    split_suffix = online_artifact_stem(
+        "split_info",
+        args.asof,
+        args.window_days,
+        args.smooth_cases_window,
+        matched_window_with_opentable=args.matched_window_with_opentable,
+    )
     split_path = online_dir / f"{split_suffix}.json"
     with open(split_path, "w", encoding="utf-8") as f:
         json.dump(split_info, f, indent=2)
@@ -249,7 +372,7 @@ def main():
     print(f"  {map_path}    (rows={len(mapping)})")
     print(f"  {split_path}")
     print("Columns:", list(train_df.columns))
-    print("Num public features:", train_df.shape[1] - 2, f"(mode={mode})")
+    print("Num public features:", train_df.shape[1] - 3, f"(mode={mode})")
     print("Cases target:", "cases", f"({args.smooth_cases_window}-day causal rolling mean)" if args.smooth_cases_window else "(raw)")
     print("Split info:", split_info)
 

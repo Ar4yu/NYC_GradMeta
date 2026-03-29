@@ -31,5 +31,57 @@ def smoothing_label(smooth_cases_window: int) -> str:
     return f"causal {window}-day moving-average cases"
 
 
-def online_artifact_stem(split: str, asof: str, window_days: int, smooth_cases_window: int) -> str:
+def matched_window_suffix(
+    matched_window_with_opentable: bool,
+    matched_source: str = "ot",
+) -> str:
+    if not matched_window_with_opentable:
+        return ""
+    return f"_matched_{matched_source}"
+
+
+def online_artifact_stem(
+    split: str,
+    asof: str,
+    window_days: int,
+    smooth_cases_window: int,
+    matched_window_with_opentable: bool = False,
+    matched_source: str = "ot",
+) -> str:
+    suffix = matched_window_suffix(
+        matched_window_with_opentable=matched_window_with_opentable,
+        matched_source=matched_source,
+    )
+    if matched_window_with_opentable:
+        return f"{split}_{asof}{suffix}_w{int(smooth_cases_window)}"
     return f"{split}_{asof}_history{int(window_days)}_w{int(smooth_cases_window)}"
+
+
+def private_artifact_stem(
+    asof: str,
+    matched_window_with_opentable: bool = False,
+    matched_source: str = "ot",
+) -> str:
+    if matched_window_with_opentable:
+        suffix = matched_window_suffix(
+            matched_window_with_opentable=matched_window_with_opentable,
+            matched_source=matched_source,
+        )
+        return f"opentable_private_observed_{asof}{suffix}"
+    return f"opentable_private_lap_{asof}"
+
+
+def run_tag_for_mode(
+    mode: str,
+    use_adapter: bool,
+    smooth_cases_window: int,
+    matched_window_with_opentable: bool = False,
+    matched_source: str = "ot",
+) -> str:
+    base = f"{mode}{'_adapter' if use_adapter else ''}_w{int(smooth_cases_window)}"
+    if matched_window_with_opentable:
+        base += matched_window_suffix(
+            matched_window_with_opentable=matched_window_with_opentable,
+            matched_source=matched_source,
+        )
+    return base

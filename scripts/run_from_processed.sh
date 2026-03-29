@@ -29,6 +29,7 @@ LONG_TRAIN="${LONG_TRAIN:-0}"
 CLIP_NORM="${CLIP_NORM:-}"
 SMOOTH_CASES_WINDOW="${SMOOTH_CASES_WINDOW:-0}"
 WINDOW_DAYS="${WINDOW_DAYS:-170}"
+MATCHED_WINDOW_WITH_OPENTABLE="${MATCHED_WINDOW_WITH_OPENTABLE:-0}"
 NO_PRIVATE=""
 EXTRA_ARGS=()
 MODE="master_opentable"
@@ -52,6 +53,9 @@ TRAIN_ARGS=(
   --smooth_cases_window "${SMOOTH_CASES_WINDOW}"
   --window_days "${WINDOW_DAYS}"
 )
+if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
+  TRAIN_ARGS+=( --matched_window_with_opentable )
+fi
 if [ -n "${NO_PRIVATE}" ]; then
   TRAIN_ARGS+=( "${NO_PRIVATE}" )
 fi
@@ -70,12 +74,21 @@ fi
 "$PYTHON" "${TRAIN_ARGS[@]}"
 
 echo "==> Saving visualization"
-MPLCONFIGDIR="${MPLCONFIGDIR:-.venv/mplconfig}" "$PYTHON" -m nyc_gradmeta.visualization \
-  --asof "${ASOF}" \
-  --config "${CFG}" \
-  --mode "${MODE}" \
-  --smooth_cases_window "${SMOOTH_CASES_WINDOW}" \
+VIS_ARGS=(
+  -m nyc_gradmeta.visualization
+  --asof "${ASOF}"
+  --config "${CFG}"
+  --mode "${MODE}"
+  --smooth_cases_window "${SMOOTH_CASES_WINDOW}"
   --window_days "${WINDOW_DAYS}"
+)
+if [ "${USE_ADAPTER}" = "1" ]; then
+  VIS_ARGS+=( --use_adapter )
+fi
+if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
+  VIS_ARGS+=( --matched_window_with_opentable )
+fi
+MPLCONFIGDIR="${MPLCONFIGDIR:-.venv/mplconfig}" "$PYTHON" "${VIS_ARGS[@]}"
 
 echo "Done. Forecast and models: outputs/nyc/${ASOF}/"
-echo "Plot: outputs/nyc/${ASOF}/forecast_vs_truth_${MODE}_w${SMOOTH_CASES_WINDOW}.png"
+echo "Plot(s): outputs/nyc/${ASOF}/forecast_vs_truth_*.png"

@@ -14,44 +14,55 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from nyc_gradmeta.utils import online_artifact_stem, smoothing_label
+from nyc_gradmeta.utils import online_artifact_stem, run_tag_for_mode, smoothing_label
 
 
-def load_forecast(asof: str, smooth_cases_window: int, root: Path = Path(".")) -> pd.DataFrame:
+def load_forecast(
+    asof: str,
+    smooth_cases_window: int,
+    run_tag: str | None = None,
+    root: Path = Path("."),
+) -> pd.DataFrame:
     out_dir = root / "outputs" / "nyc" / asof
-    csv_path = out_dir / f"forecast_28d_w{int(smooth_cases_window)}.csv"
-    npy_path = out_dir / f"forecast_28d_w{int(smooth_cases_window)}.npy"
+    forecast_base = f"forecast_28d_w{int(smooth_cases_window)}"
+    candidates = []
+    if run_tag:
+        candidates.append((out_dir / f"{forecast_base}_{run_tag}.csv", out_dir / f"{forecast_base}_{run_tag}.npy"))
+    candidates.append((out_dir / f"{forecast_base}.csv", out_dir / f"{forecast_base}.npy"))
 
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-        if "pred_cases" not in df.columns:
-            raise ValueError(f"{csv_path} must have column 'pred_cases'.")
-        return df
-    if npy_path.exists():
-        preds = np.load(npy_path)
-        return pd.DataFrame(
-            {
-                "day_idx": np.arange(len(preds), dtype=int),
-                "pred_cases": preds,
-                "smooth_cases_window": np.full(len(preds), int(smooth_cases_window), dtype=int),
-            }
-        )
+    for csv_path, npy_path in candidates:
+        if csv_path.exists():
+            df = pd.read_csv(csv_path)
+            if "pred_cases" not in df.columns:
+                raise ValueError(f"{csv_path} must have column 'pred_cases'.")
+            return df
+        if npy_path.exists():
+            preds = np.load(npy_path)
+            return pd.DataFrame(
+                {
+                    "day_idx": np.arange(len(preds), dtype=int),
+                    "pred_cases": preds,
+                    "smooth_cases_window": np.full(len(preds), int(smooth_cases_window), dtype=int),
+                }
+            )
     raise FileNotFoundError(f"Could not find forecast file in {out_dir}")
 
 
 def plot_forecast_vs_truth(
     asof: str,
     test_csv: Path,
+    run_tag: str,
     out_path: Path,
     smooth_cases_window: int,
     title: str = "",
+    subtitle: str = "",
 ) -> None:
     test_df = pd.read_csv(test_csv)
     if "cases" not in test_df.columns:
         raise ValueError(f"{test_csv} must have column 'cases'.")
 
     y_true = test_df["cases"].to_numpy(dtype=float)
-    forecast_df = load_forecast(asof, smooth_cases_window=smooth_cases_window)
+    forecast_df = load_forecast(asof, smooth_cases_window=smooth_cases_window, run_tag=run_tag)
     y_pred = forecast_df["pred_cases"].to_numpy(dtype=float)
 
     if len(y_true) != len(y_pred):
@@ -62,18 +73,25 @@ def plot_forecast_vs_truth(
 
     x = np.arange(len(y_true))
 
-    plt.figure(figsize=(8, 4))
-    plt.plot(x, y_true, label=f"Truth ({smoothing_label(smooth_cases_window)})", marker="o")
-    plt.plot(x, y_pred, label=f"Forecast ({smoothing_label(smooth_cases_window)})", marker="x")
-    plt.xlabel("Day in forecast window")
-    plt.ylabel("Daily cases")
-    plt.title(title or f"NYC forecast vs truth (ASOF={asof}, {smoothing_label(smooth_cases_window)})")
-    plt.legend()
-    plt.tight_layout()
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(x, y_true, label=f"Truth ({smoothing_label(smooth_cases_window)})", marker="o")
+    ax.plot(x, y_pred, label=f"Forecast ({smoothing_label(smooth_cases_window)})", marker="x")
+    ax.set_xlabel("Day in forecast window")
+    ax.set_ylabel("Daily cases")
+    ax.legend(loc="upper right")
+    fig.suptitle(
+        title or f"NYC Forecast vs Truth: {run_tag}",
+        fontsize=14,
+        fontweight="bold",
+        y=0.98,
+    )
+    if subtitle:
+        fig.text(0.5, 0.935, subtitle, ha="center", va="top", fontsize=10, color="dimgray")
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=200)
-    plt.close()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
 
 
 def main():
@@ -92,21 +110,47 @@ def main():
         default="master_opentable",
         help="Label used only for output filename.",
     )
+    ap.add_argument("--use_adapter", action="store_true", help="Load the adapter run tag outputs.")
+    ap.add_argument(
+        "--matched_window_with_opentable",
+        action="store_true",
+        help="Use matched-window split metadata and run-tag-specific forecast artifacts.",
+    )
     args = ap.parse_args()
 
     with open(args.config, "r") as f:
         cfg = json.load(f)
     nyc = cfg["nyc"]
     online_dir = Path(nyc["paths"]["online_dir"])
-    test_csv = online_dir / f"{online_artifact_stem('test', args.asof, args.window_days, args.smooth_cases_window)}.csv"
+    mode = "public_only" if args.mode == "master_only" else "public_opentable"
+    run_tag = run_tag_for_mode(
+        mode=mode,
+        use_adapter=bool(args.use_adapter),
+        smooth_cases_window=args.smooth_cases_window,
+        matched_window_with_opentable=args.matched_window_with_opentable,
+    )
+    test_csv = online_dir / (
+        f"{online_artifact_stem('test', args.asof, args.window_days, args.smooth_cases_window, matched_window_with_opentable=args.matched_window_with_opentable)}.csv"
+    )
+    split_info_path = online_dir / (
+        f"{online_artifact_stem('split_info', args.asof, args.window_days, args.smooth_cases_window, matched_window_with_opentable=args.matched_window_with_opentable)}.json"
+    )
+    with open(split_info_path, "r", encoding="utf-8") as f:
+        split_info = json.load(f)
 
-    out_path = Path("outputs") / "nyc" / args.asof / f"forecast_vs_truth_{args.mode}_w{args.smooth_cases_window}.png"
+    out_path = Path("outputs") / "nyc" / args.asof / f"forecast_vs_truth_{run_tag}.png"
     plot_forecast_vs_truth(
         asof=args.asof,
         test_csv=test_csv,
+        run_tag=run_tag,
         out_path=out_path,
         smooth_cases_window=args.smooth_cases_window,
-        title=f"NYC forecast vs truth ({args.mode}, ASOF={args.asof}, {smoothing_label(args.smooth_cases_window)})",
+        title=f"NYC Forecast vs Truth: {run_tag}",
+        subtitle=(
+            f"Window {split_info.get('window_start')} to {split_info.get('window_end')} | "
+            f"Test {split_info.get('test_start')} to {split_info.get('test_end')} | "
+            f"Requested ASOF {args.asof} | {smoothing_label(args.smooth_cases_window)}"
+        ),
     )
     print("Saved visualization to:", out_path)
 
