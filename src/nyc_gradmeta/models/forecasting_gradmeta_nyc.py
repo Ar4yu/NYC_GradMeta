@@ -31,6 +31,7 @@ from nyc_gradmeta.sim.model_utils import (
     MetapopulationSEIRMBeta,
 )
 from nyc_gradmeta.utils import (
+    normalize_privacy_mode,
     online_artifact_stem,
     private_artifact_stem,
     run_tag_for_mode,
@@ -250,14 +251,15 @@ def forward_simulator(
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
-    rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+    mse_val = float(np.mean((y_true - y_pred) ** 2))
+    rmse = float(np.sqrt(mse_val))
     mae = float(np.mean(np.abs(y_true - y_pred)))
     nz = np.abs(y_true) > 1e-8
     if nz.any():
         mape = float(np.mean(np.abs((y_true[nz] - y_pred[nz]) / y_true[nz])) * 100.0)
     else:
         mape = float("nan")
-    return {"rmse": rmse, "mae": mae, "mape": mape}
+    return {"mse": mse_val, "rmse": rmse, "mae": mae, "mape": mape}
 
 
 def save_fit_plot(
@@ -363,9 +365,65 @@ def get_private_stats(private_tensor: torch.Tensor) -> dict:
     }
 
 
+def validate_private_tensor_contract(
+    private_tensor: torch.Tensor,
+    num_patch: int,
+    run_tag: str,
+    private_meta: dict | None = None,
+) -> None:
+    if private_tensor.dim() != 2:
+        raise ValueError(
+            f"Private tensor contract violation for {run_tag}: expected [P,T], got {tuple(private_tensor.shape)}"
+        )
+    if private_tensor.shape[0] != num_patch:
+        raise ValueError(
+            f"Private tensor patch mismatch for {run_tag}: expected {num_patch}, got {private_tensor.shape[0]}"
+        )
+    if private_tensor.shape[1] <= 0:
+        raise ValueError(f"Private tensor contract violation for {run_tag}: time dimension must be positive.")
+    if not torch.isfinite(private_tensor).all():
+        raise ValueError(f"Private tensor for {run_tag} contains NaN/Inf values.")
+
+    abs_max = float(private_tensor.abs().max().detach().cpu().item())
+    if abs_max > 10.0:
+        raise ValueError(
+            f"Private tensor for {run_tag} has implausible magnitude abs_max={abs_max:.4f}. "
+            "Expected scaled OpenTable inputs before model-side normalization."
+        )
+
+    tensor_k = int(private_tensor.shape[1])
+    meta_k = private_meta.get("K") if isinstance(private_meta, dict) else None
+    if meta_k is not None and int(meta_k) != tensor_k:
+        raise ValueError(
+            f"Private tensor K mismatch for {run_tag}: metadata K={meta_k}, tensor T={tensor_k}."
+        )
+
+
 def set_requires_grad(module: nn.Module, requires_grad: bool) -> None:
     for param in module.parameters():
         param.requires_grad = requires_grad
+
+
+def default_long_train_enabled(args) -> bool:
+    if args.long_train is not None:
+        return bool(args.long_train)
+    explicit_epoch_override = any(
+        value is not None
+        for value in (args.epochs, args.epochs_gradmeta, args.epochs_adapter, args.epochs_together)
+    )
+    return bool(
+        args.stage == "all"
+        and args.matched_window_with_opentable
+        and args.use_adapter
+        and not explicit_epoch_override
+    )
+
+
+def checkpoint_paths(out_dir: Path, run_tag: str) -> tuple[Path, Path]:
+    return (
+        out_dir / f"param_model_{run_tag}.pt",
+        out_dir / f"error_adapter_{run_tag}.pt",
+    )
 
 
 def main():
@@ -394,9 +452,17 @@ def main():
     ap.add_argument("--stage", choices=["gradmeta", "adapter", "together", "all"], default="all")
     ap.add_argument(
         "--long_train",
+        dest="long_train",
         action="store_true",
         help="Scale stage epochs by a long-train multiplier (defaults to 5x or cfg-derived).",
     )
+    ap.add_argument(
+        "--no_long_train",
+        dest="long_train",
+        action="store_false",
+        help="Disable long-train scaling even for matched adapter runs.",
+    )
+    ap.set_defaults(long_train=None)
     ap.add_argument("--clip_norm", type=float, default=None, help="Gradient clipping max norm (e.g., 10.0).")
     ap.add_argument("--val_split", type=float, default=0.2, help="Fraction of train window reserved for validation (0-1).")
     ap.add_argument("--patience", type=int, default=50, help="Validation epochs to wait before early stopping.")
@@ -427,6 +493,24 @@ def main():
         "--matched_window_with_opentable",
         action="store_true",
         help="Use matched-window artifacts built from the true observed public/OpenTable overlap.",
+    )
+    ap.add_argument(
+        "--privacy_mode",
+        choices=["none", "event", "restaurant"],
+        default="none",
+        help="Privacy mode for the OpenTable tensor artifact.",
+    )
+    ap.add_argument(
+        "--mechanism",
+        choices=["gaussian"],
+        default="gaussian",
+        help="Privacy mechanism for DP OpenTable runs.",
+    )
+    ap.add_argument("--epsilon", type=float, default=None, help="Privacy epsilon for DP OpenTable runs.")
+    ap.add_argument(
+        "--run_tag_override",
+        default=None,
+        help="Optional explicit run_tag override used for saved artifacts and checkpoints.",
     )
     args = ap.parse_args()
 
@@ -501,7 +585,7 @@ def main():
     with open(split_info_path, "r", encoding="utf-8") as f:
         split_info = json.load(f)
     private_pt = private_dir / (
-        f"{private_artifact_stem(args.asof, matched_window_with_opentable=args.matched_window_with_opentable)}.pt"
+        f"{private_artifact_stem(args.asof, matched_window_with_opentable=args.matched_window_with_opentable, privacy_mode=args.privacy_mode, mechanism=args.mechanism, epsilon=args.epsilon)}.pt"
     )
     out_dir = Path("outputs") / "nyc" / args.asof
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -524,18 +608,52 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
 
     use_private = not args.no_private
+    privacy_mode = normalize_privacy_mode(args.privacy_mode)
+    if not use_private and privacy_mode != "none":
+        raise ValueError("privacy_mode requires the OpenTable pathway. Remove --no_private or set --privacy_mode none.")
     mode = "public_opentable" if use_private else "public_only"
     run_tag = run_tag_for_mode(
         mode=mode,
         use_adapter=bool(args.use_adapter),
         smooth_cases_window=args.smooth_cases_window,
         matched_window_with_opentable=args.matched_window_with_opentable,
+        privacy_mode=privacy_mode,
+        mechanism=args.mechanism,
+        epsilon=args.epsilon,
     )
+    if args.run_tag_override:
+        run_tag = str(args.run_tag_override).strip()
+        if not run_tag:
+            raise ValueError("--run_tag_override must not be empty.")
+    param_ckpt_path, adapter_ckpt_path = checkpoint_paths(out_dir, run_tag)
     private_full = None
+    private_meta: dict = {
+        "privacy_mode": "none",
+        "mechanism": "none",
+        "epsilon": None,
+        "delta": None,
+        "Tmax": None,
+        "D": None,
+        "K": None,
+        "clipping_bound_pp": None,
+        "sensitivity_day_pp": None,
+        "sensitivity_l2_pp": None,
+        "sigma_pp": None,
+    }
     if use_private:
         if not private_pt.exists():
             raise FileNotFoundError(f"Private tensor not found: {private_pt}")
         private_full = torch.load(private_pt, map_location="cpu").to(torch.float32)
+        private_meta_path = private_pt.with_suffix(".json")
+        if private_meta_path.exists():
+            with open(private_meta_path, "r", encoding="utf-8") as f:
+                private_meta = json.load(f)
+        validate_private_tensor_contract(
+            private_tensor=private_full,
+            num_patch=num_patch,
+            run_tag=run_tag,
+            private_meta=private_meta,
+        )
     private_start_idx = 0
     if use_private and private_full is not None:
         private_t = private_full.shape[1]
@@ -601,7 +719,11 @@ def main():
     else:
         epochs_together = int(nyc.get("epochs_together", base_epochs))
 
-    if args.long_train:
+    long_train_enabled = default_long_train_enabled(args)
+    if long_train_enabled and args.long_train is None:
+        print("[info] Matched adapter run detected with no epoch override; enabling canonical long-train schedule.")
+
+    if long_train_enabled:
         long_mult = 5
         if args.epochs is None and "num_epochs_long" in cfg and int(cfg.get("num_epochs_diff", 1)) > 0:
             ratio = int(cfg["num_epochs_long"]) / float(cfg.get("num_epochs_diff", 1))
@@ -736,14 +858,14 @@ def main():
             loss_val = float(loss.detach().cpu().item())
             if loss_val < best_loss_gradmeta:
                 best_loss_gradmeta = loss_val
-                torch.save(param_model.state_dict(), out_dir / "param_model.pt")
+                torch.save(param_model.state_dict(), param_ckpt_path)
             pbar.set_postfix_str(f"RMSE={best_loss_gradmeta:.4f}")
 
     if error_adapter is not None and "adapter" in stages_to_run and epochs_adapter > 0:
-        if (out_dir / "param_model.pt").exists():
-            param_model.load_state_dict(torch.load(out_dir / "param_model.pt", map_location=device))
+        if param_ckpt_path.exists():
+            param_model.load_state_dict(torch.load(param_ckpt_path, map_location=device))
         else:
-            print("[info] Stage2 requested without existing param_model.pt; using current param_model weights.")
+            print(f"[info] Stage2 requested without existing {param_ckpt_path.name}; using current param_model weights.")
 
         if args.freeze_param_model:
             set_requires_grad(param_model, False)
@@ -804,18 +926,18 @@ def main():
             loss_val = float(loss.detach().cpu().item())
             if loss_val < best_loss_adapter:
                 best_loss_adapter = loss_val
-                torch.save(error_adapter.state_dict(), out_dir / "error_adapter.pt")
+                torch.save(error_adapter.state_dict(), adapter_ckpt_path)
             pbar.set_postfix_str(f"loss={best_loss_adapter:.4f}")
 
         set_requires_grad(param_model, True)
 
     if error_adapter is not None and "together" in stages_to_run and epochs_together > 0:
-        if (out_dir / "param_model.pt").exists():
-            param_model.load_state_dict(torch.load(out_dir / "param_model.pt", map_location=device))
-        if (out_dir / "error_adapter.pt").exists():
-            error_adapter.load_state_dict(torch.load(out_dir / "error_adapter.pt", map_location=device))
+        if param_ckpt_path.exists():
+            param_model.load_state_dict(torch.load(param_ckpt_path, map_location=device))
+        if adapter_ckpt_path.exists():
+            error_adapter.load_state_dict(torch.load(adapter_ckpt_path, map_location=device))
         else:
-            print("[info] Stage3 requested without existing error_adapter.pt; using current adapter weights.")
+            print(f"[info] Stage3 requested without existing {adapter_ckpt_path.name}; using current adapter weights.")
 
         set_requires_grad(param_model, True)
         set_requires_grad(error_adapter, True)
@@ -885,17 +1007,17 @@ def main():
             loss_val = float(loss.detach().cpu().item())
             if loss_val < best_loss_together:
                 best_loss_together = loss_val
-                torch.save(param_model.state_dict(), out_dir / "param_model.pt")
-                torch.save(error_adapter.state_dict(), out_dir / "error_adapter.pt")
+                torch.save(param_model.state_dict(), param_ckpt_path)
+                torch.save(error_adapter.state_dict(), adapter_ckpt_path)
             pbar.set_postfix_str(f"loss={best_loss_together:.4f}")
 
     if args.use_adapter and error_adapter is None:
         print("[info] Adapter requested but unavailable; skipping adapter stages.")
 
-    if (out_dir / "param_model.pt").exists():
-        param_model.load_state_dict(torch.load(out_dir / "param_model.pt", map_location=device))
-    if error_adapter is not None and (out_dir / "error_adapter.pt").exists():
-        error_adapter.load_state_dict(torch.load(out_dir / "error_adapter.pt", map_location=device))
+    if param_ckpt_path.exists():
+        param_model.load_state_dict(torch.load(param_ckpt_path, map_location=device))
+    if error_adapter is not None and adapter_ckpt_path.exists():
+        error_adapter.load_state_dict(torch.load(adapter_ckpt_path, map_location=device))
 
     param_model.eval()
     if error_adapter is not None:
@@ -975,6 +1097,18 @@ def main():
         "test_len": int(test_horizon),
         "private_start_idx": int(private_start_idx),
         "matched_window_with_opentable": bool(args.matched_window_with_opentable),
+        "privacy_mode": private_meta.get("privacy_mode", privacy_mode),
+        "mechanism": private_meta.get("mechanism", "none"),
+        "epsilon": private_meta.get("epsilon"),
+        "delta": private_meta.get("delta"),
+        "Tmax": private_meta.get("Tmax"),
+        "D": private_meta.get("D"),
+        "K": private_meta.get("K"),
+        "clipping_bound_pp": private_meta.get("clipping_bound_pp"),
+        "sensitivity_day_pp": private_meta.get("sensitivity_day_pp"),
+        "sensitivity_l2_pp": private_meta.get("sensitivity_l2_pp"),
+        "sigma_pp": private_meta.get("sigma_pp"),
+        "long_train": bool(long_train_enabled),
         "window_start": split_info.get("window_start"),
         "window_end": split_info.get("window_end"),
         "train_start": split_info.get("train_start"),
@@ -1026,23 +1160,39 @@ def main():
     fit_df.to_csv(out_dir / f"fit_train_test_{run_tag}.csv", index=False)
 
     if not args.minimal_outputs:
+        privacy_bits = []
+        if metrics["privacy_mode"] and metrics["privacy_mode"] != "none":
+            privacy_bits.append(f"{metrics['mechanism']} {metrics['privacy_mode']} DP")
+            privacy_bits.append(f"eps={metrics['epsilon']}")
+            if metrics.get("sigma_pp") is not None:
+                privacy_bits.append(f"sigma={float(metrics['sigma_pp']):.3f} pp")
+        subtitle = (
+            f"Window {split_info.get('window_start')} to {split_info.get('window_end')} | "
+            f"Train {split_info.get('train_start')} to {split_info.get('train_end')} | "
+            f"Test {split_info.get('test_start')} to {split_info.get('test_end')} | "
+            f"Requested ASOF {args.asof} | {smoothing_desc}"
+        )
+        if privacy_bits:
+            subtitle += " | " + " | ".join(privacy_bits)
         save_fit_plot(
             out_path=out_dir / f"fit_train_test_{run_tag}.png",
             y_true_full=y_true_full,
             y_pred_full=preds_total_np,
             split_idx=training_num_steps,
             title=f"NYC GradMeta Fit: {run_tag}",
-            subtitle=(
-                f"Window {split_info.get('window_start')} to {split_info.get('window_end')} | "
-                f"Train {split_info.get('train_start')} to {split_info.get('train_end')} | "
-                f"Test {split_info.get('test_start')} to {split_info.get('test_end')} | "
-                f"Requested ASOF {args.asof} | {smoothing_desc}"
-            ),
+            subtitle=subtitle,
             truth_label=smoothing_desc,
         )
 
     with open(out_dir / f"metrics_{run_tag}.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
+    run_metadata = {
+        **metrics,
+        "private_artifact": str(private_pt) if use_private else None,
+        "private_metadata": private_meta if use_private else None,
+    }
+    with open(out_dir / f"run_metadata_{run_tag}.json", "w", encoding="utf-8") as f:
+        json.dump(run_metadata, f, indent=2)
 
     summary_row = pd.DataFrame(
         [
@@ -1050,7 +1200,19 @@ def main():
             "asof": args.asof,
             "run_tag": run_tag,
             "mode": mode,
+            "privacy_mode": metrics["privacy_mode"],
+            "mechanism": metrics["mechanism"],
+            "epsilon": metrics["epsilon"],
+            "delta": metrics["delta"],
+            "Tmax": metrics["Tmax"],
+            "D": metrics["D"],
+            "K": metrics["K"],
+            "clipping_bound_pp": metrics["clipping_bound_pp"],
+            "sensitivity_day_pp": metrics["sensitivity_day_pp"],
+            "sensitivity_l2_pp": metrics["sensitivity_l2_pp"],
+            "sigma_pp": metrics["sigma_pp"],
             "use_adapter": bool(args.use_adapter),
+            "long_train": bool(long_train_enabled),
             "epochs_gradmeta": epochs_gradmeta,
             "epochs_adapter": epochs_adapter,
             "epochs_together": epochs_together,
@@ -1066,8 +1228,10 @@ def main():
             "train_end": split_info.get("train_end"),
             "test_start": split_info.get("test_start"),
             "test_end": split_info.get("test_end"),
+            "train_mse": train_metrics["mse"],
             "train_rmse": train_metrics["rmse"],
             "train_mae": train_metrics["mae"],
+            "test_mse": test_metrics["mse"],
             "test_rmse": test_metrics["rmse"],
             "test_mae": test_metrics["mae"],
             "test_mape": test_metrics["mape"],

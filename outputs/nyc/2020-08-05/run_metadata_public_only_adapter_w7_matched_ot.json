@@ -61,5 +61,7 @@
     "rmse": 126.78001661253305,
     "mae": 113.3240100315639,
     "mape": 32.739030550752915
-  }
+  },
+  "private_artifact": null,
+  "private_metadata": null
 }

@@ -40,6 +40,45 @@ def matched_window_suffix(
     return f"_matched_{matched_source}"
 
 
+def normalize_privacy_mode(privacy_mode: str | None) -> str:
+    mode = str(privacy_mode or "none").strip().lower()
+    if mode in {"", "none", "nonprivate", "non_private"}:
+        return "none"
+    if mode not in {"event", "restaurant"}:
+        raise ValueError(f"Unsupported privacy_mode '{privacy_mode}'. Expected none|event|restaurant.")
+    return mode
+
+
+def normalize_privacy_mechanism(mechanism: str | None) -> str:
+    mech = str(mechanism or "gaussian").strip().lower()
+    if mech != "gaussian":
+        raise ValueError(f"Unsupported privacy mechanism '{mechanism}'. Expected gaussian.")
+    return mech
+
+
+def epsilon_tag(epsilon: float | int | None) -> str:
+    if epsilon is None:
+        raise ValueError("epsilon is required for DP artifact naming.")
+    value = float(epsilon)
+    if value <= 0:
+        raise ValueError(f"epsilon must be positive, got {epsilon}.")
+    if value.is_integer():
+        return str(int(value))
+    return str(value).replace(".", "p")
+
+
+def privacy_suffix(
+    privacy_mode: str | None = "none",
+    mechanism: str | None = "gaussian",
+    epsilon: float | int | None = None,
+) -> str:
+    mode = normalize_privacy_mode(privacy_mode)
+    if mode == "none":
+        return ""
+    mech = normalize_privacy_mechanism(mechanism)
+    return f"_dp_{mech}_{mode}_eps{epsilon_tag(epsilon)}"
+
+
 def online_artifact_stem(
     split: str,
     asof: str,
@@ -61,14 +100,22 @@ def private_artifact_stem(
     asof: str,
     matched_window_with_opentable: bool = False,
     matched_source: str = "ot",
+    privacy_mode: str | None = "none",
+    mechanism: str | None = "gaussian",
+    epsilon: float | int | None = None,
 ) -> str:
+    dp_suffix = privacy_suffix(
+        privacy_mode=privacy_mode,
+        mechanism=mechanism,
+        epsilon=epsilon,
+    )
     if matched_window_with_opentable:
         suffix = matched_window_suffix(
             matched_window_with_opentable=matched_window_with_opentable,
             matched_source=matched_source,
         )
-        return f"opentable_private_observed_{asof}{suffix}"
-    return f"opentable_private_lap_{asof}"
+        return f"opentable_private_observed{dp_suffix}_{asof}{suffix}"
+    return f"opentable_private_lap{dp_suffix}_{asof}"
 
 
 def run_tag_for_mode(
@@ -77,8 +124,21 @@ def run_tag_for_mode(
     smooth_cases_window: int,
     matched_window_with_opentable: bool = False,
     matched_source: str = "ot",
+    privacy_mode: str | None = "none",
+    mechanism: str | None = "gaussian",
+    epsilon: float | int | None = None,
 ) -> str:
-    base = f"{mode}{'_adapter' if use_adapter else ''}_w{int(smooth_cases_window)}"
+    mode_norm = normalize_privacy_mode(privacy_mode)
+    base = mode
+    if mode_norm == "none" and use_adapter:
+        base += "_adapter"
+    if mode_norm != "none":
+        base += privacy_suffix(
+            privacy_mode=mode_norm,
+            mechanism=mechanism,
+            epsilon=epsilon,
+        )
+    base += f"_w{int(smooth_cases_window)}"
     if matched_window_with_opentable:
         base += matched_window_suffix(
             matched_window_with_opentable=matched_window_with_opentable,

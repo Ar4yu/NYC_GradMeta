@@ -1,0 +1,4 @@
+run_name,privacy_mode,mechanism,epsilon,delta,Tmax,D,K,clipping_bound_pp,sensitivity_day_pp,sensitivity_l2_pp,sigma_pp,smoothing_window,window_start,window_end,train_start,train_end,test_start,test_end,MSE,RMSE,MAE,MAPE
+public_only_adapter_w7_matched_ot,none,none,,,,,,,,,,7,2020-02-29,2020-08-05,2020-02-29,2020-07-08,2020-07-09,2020-08-05,,126.78001661253305,113.3240100315639,32.739030550752915
+public_opentable_adapter_w7_matched_ot,none,none,,,,,,,,,,7,2020-02-29,2020-08-05,2020-02-29,2020-07-08,2020-07-09,2020-08-05,,64.33216967208595,49.621803283691406,17.279345368032896
+public_opentable_dp_gaussian_event_eps4_w7_matched_ot,event,gaussian,4.0,0.0001,200.0,80000.0,159.0,100.0,0.25,0.25,0.27147576899367315,7,2020-02-29,2020-08-05,2020-02-29,2020-07-08,2020-07-09,2020-08-05,2974224699.133325,54536.45293868428,53732.886361258374,16405.508885499075

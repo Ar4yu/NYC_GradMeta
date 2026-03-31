@@ -1,9 +1,10 @@
 import argparse
-from pathlib import Path
-import pandas as pd
-import numpy as np
-import torch
 import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
 
 from nyc_gradmeta.utils import private_artifact_stem
 
@@ -70,6 +71,78 @@ def load_observed_source(
     return source, observed_start, observed_end
 
 
+def gaussian_multiplier(delta: float) -> float:
+    if not (0.0 < float(delta) < 1.0):
+        raise ValueError(f"delta must be in (0,1), got {delta}.")
+    return float(np.sqrt(2.0 * np.log(1.25 / float(delta))))
+
+
+def resolve_dp_metadata(
+    privacy_mode: str,
+    mechanism: str,
+    epsilon: float | None,
+    delta: float,
+    tmax: float,
+    denominator_d: float,
+    k_days: int,
+    clipping_bound_pp: float,
+    dp_seed: int,
+) -> dict:
+    mode = str(privacy_mode).strip().lower()
+    mech = str(mechanism).strip().lower()
+    if mode in {"", "none", "nonprivate", "non_private"}:
+        return {
+            "privacy_mode": "none",
+            "mechanism": "none",
+            "epsilon": None,
+            "delta": None,
+            "Tmax": None,
+            "D": None,
+            "K": int(k_days),
+            "clipping_bound_pp": float(clipping_bound_pp),
+            "sensitivity_day_pp": None,
+            "sensitivity_l2_pp": None,
+            "sigma_pp": None,
+            "dp_seed": None,
+            "noise_added": False,
+        }
+
+    if mech != "gaussian":
+        raise ValueError(f"Unsupported mechanism '{mechanism}'. Expected gaussian.")
+    if mode not in {"event", "restaurant"}:
+        raise ValueError(f"Unsupported privacy_mode '{privacy_mode}'. Expected none|event|restaurant.")
+    if epsilon is None or float(epsilon) <= 0:
+        raise ValueError(f"epsilon must be positive for DP runs, got {epsilon}.")
+    if float(tmax) <= 0 or float(denominator_d) <= 0:
+        raise ValueError(f"Tmax and D must be positive, got Tmax={tmax}, D={denominator_d}.")
+    if int(k_days) <= 0:
+        raise ValueError(f"K must be positive, got {k_days}.")
+    if float(clipping_bound_pp) <= 0:
+        raise ValueError(f"clipping_bound_pp must be positive, got {clipping_bound_pp}.")
+
+    delta_day = (float(tmax) / float(denominator_d)) * 100.0
+    if mode == "event":
+        delta_l2 = delta_day
+    else:
+        delta_l2 = delta_day * float(np.sqrt(float(k_days)))
+    sigma_pp = (delta_l2 / float(epsilon)) * gaussian_multiplier(delta)
+    return {
+        "privacy_mode": mode,
+        "mechanism": mech,
+        "epsilon": float(epsilon),
+        "delta": float(delta),
+        "Tmax": float(tmax),
+        "D": float(denominator_d),
+        "K": int(k_days),
+        "clipping_bound_pp": float(clipping_bound_pp),
+        "sensitivity_day_pp": float(delta_day),
+        "sensitivity_l2_pp": float(delta_l2),
+        "sigma_pp": float(sigma_pp),
+        "dp_seed": int(dp_seed),
+        "noise_added": True,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/nyc.json")
@@ -91,6 +164,34 @@ def main():
             "Clip the private tensor to the true observed public/OpenTable overlap window. "
             "This is the fair A/B experiment mode."
         ),
+    )
+    ap.add_argument(
+        "--privacy_mode",
+        choices=["none", "event", "restaurant"],
+        default="none",
+        help="Privacy mode for the city-level OpenTable series before patch lifting.",
+    )
+    ap.add_argument(
+        "--mechanism",
+        choices=["gaussian"],
+        default="gaussian",
+        help="Differential privacy mechanism used when privacy_mode is not none.",
+    )
+    ap.add_argument("--epsilon", type=float, default=None, help="DP epsilon for Gaussian runs.")
+    ap.add_argument("--delta", type=float, default=1e-4, help="DP delta for Gaussian runs.")
+    ap.add_argument("--tmax", type=float, default=200.0, help="Maximum daily contribution clip at the event level.")
+    ap.add_argument("--denominator_d", type=float, default=80000.0, help="Daily denominator D in percentage-point sensitivity.")
+    ap.add_argument(
+        "--clipping_bound_pp",
+        type=float,
+        default=100.0,
+        help="Fixed symmetric clipping bound in percentage points for the OpenTable YoY series.",
+    )
+    ap.add_argument(
+        "--dp_seed",
+        type=int,
+        default=0,
+        help="Random seed used for Gaussian DP noise generation.",
     )
     args = ap.parse_args()
 
@@ -177,26 +278,57 @@ def main():
         .fillna(0.0)
     )
 
-    series = aligned[args.opentable_col].to_numpy(dtype=np.float32)
-    if np.isnan(series).any():
+    series_observed_pp = aligned[args.opentable_col].to_numpy(dtype=np.float32)
+    if np.isnan(series_observed_pp).any():
         raise ValueError("OpenTable aligned series contains NaNs after filling.")
-    T = len(series)
+    series_clipped_pp = np.clip(
+        series_observed_pp,
+        -float(args.clipping_bound_pp),
+        float(args.clipping_bound_pp),
+    ).astype(np.float32)
+    T = len(series_clipped_pp)
+    dp_meta = resolve_dp_metadata(
+        privacy_mode=args.privacy_mode,
+        mechanism=args.mechanism,
+        epsilon=args.epsilon,
+        delta=args.delta,
+        tmax=args.tmax,
+        denominator_d=args.denominator_d,
+        k_days=T,
+        clipping_bound_pp=args.clipping_bound_pp,
+        dp_seed=args.dp_seed,
+    )
+
+    if dp_meta["privacy_mode"] == "none":
+        noise_pp = np.zeros(T, dtype=np.float32)
+        series_released_pp = series_clipped_pp.copy()
+    else:
+        rng = np.random.default_rng(int(args.dp_seed))
+        noise_pp = rng.normal(loc=0.0, scale=float(dp_meta["sigma_pp"]), size=T).astype(np.float32)
+        series_noised_pp = series_clipped_pp + noise_pp
+        # Post-processing clip keeps the downstream representation bounded with a fixed public rule.
+        series_released_pp = np.clip(
+            series_noised_pp,
+            -float(args.clipping_bound_pp),
+            float(args.clipping_bound_pp),
+        ).astype(np.float32)
+
+    # Fixed scaling keeps the private input range documented and independent of raw data extrema.
+    series_scaled = (series_released_pp / float(args.clipping_bound_pp)).astype(np.float32)
 
     # Build [P, T] tensor (float32). Replicate with population-weight scaling.
-    base = series[None, :]  # [1, T]
+    base = series_scaled[None, :]  # [1, T]
     weights = pop_share.astype(np.float32)[:, None]  # [P, 1]
     private = weights * base  # [P, T]
-
-    # Optional: normalize to roughly [0,1] range for stability (keep contract simple)
-    # If your professor pipeline already normalizes inside encoders, you can remove this.
-    denom = np.max(np.abs(private)) if np.max(np.abs(private)) > 0 else 1.0
-    private = private / denom
 
     tensor = torch.tensor(private, dtype=torch.float32)  # [P, T]
 
     out_base = private_artifact_stem(
         args.asof,
         matched_window_with_opentable=args.matched_window_with_opentable,
+        privacy_mode=args.privacy_mode,
+        mechanism=args.mechanism,
+        epsilon=args.epsilon,
     )
     out_path = private_dir / f"{out_base}.pt"
     torch.save(tensor, out_path)
@@ -205,6 +337,9 @@ def main():
         "actual_asof": str(actual_asof.date()),
         "matched_window_with_opentable": bool(args.matched_window_with_opentable),
         "laplace_noise_applied": False,
+        "noise_added_before_patch_lifting": True,
+        "scaling_rule": "fixed_divide_by_clipping_bound_pp",
+        "post_noise_clip_applied": True,
         "public_start": str(public_start.date()),
         "public_end": str(public_end.date()),
         "opentable_observed_start": str(observed_start.date()),
@@ -213,18 +348,45 @@ def main():
         "joint_end": str(joint_end.date()),
         "observed_days_in_tensor_window": observed_days,
         "filled_days_in_tensor_window": missing_days,
+        "series_csv": str((private_dir / f"{out_base}_series.csv").as_posix()),
         "tensor_shape": list(tensor.shape),
     }
+    meta.update(dp_meta)
     meta_path = private_dir / f"{out_base}.json"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
+    signal_df = pd.DataFrame(
+        {
+            "date": pd.Index(full_dates).strftime("%Y-%m-%d"),
+            "observed_or_filled_yoy_pp": series_observed_pp,
+            "clipped_yoy_pp": series_clipped_pp,
+            "noise_pp": noise_pp,
+            "released_yoy_pp": series_released_pp,
+            "scaled_signal": series_scaled,
+        }
+    )
+    signal_path = private_dir / f"{out_base}_series.csv"
+    signal_df.to_csv(signal_path, index=False)
+
     print("Wrote:", out_path)
     print("Metadata:", meta_path)
+    print("Signal CSV:", signal_path)
     print("Tensor shape:", tuple(tensor.shape), "[num_patch, T]")
     print("Date range:", full_dates[0].date(), "→", full_dates[-1].date())
     print("Observed OpenTable days before fill:", observed_days)
     print("Filled days inside experiment window:", missing_days)
+    if dp_meta["privacy_mode"] != "none":
+        print(
+            "[info] Applied Gaussian DP:",
+            f"mode={dp_meta['privacy_mode']}, eps={dp_meta['epsilon']}, delta={dp_meta['delta']},",
+            f"K={dp_meta['K']}, sigma_pp={dp_meta['sigma_pp']:.6f}",
+        )
+    else:
+        print(
+            "[info] Non-private OpenTable build with fixed clipping/scaling:",
+            f"clipping_bound_pp={args.clipping_bound_pp}",
+        )
     if args.matched_window_with_opentable:
         print("[info] Matched-window mode enabled. No OpenTable dates beyond the observed range were used.")
     else:

@@ -92,6 +92,14 @@ fi
 CFG="configs/nyc.json"
 OPENTABLE_CSV="${OPENTABLE_CSV:-data/processed/opentable_yoy_daily.csv}"
 OPENTABLE_COL="${OPENTABLE_COL:-yoy_seated_diner}"
+DP_PRIVACY_MODE="${DP_PRIVACY_MODE:-none}"
+DP_MECHANISM="${DP_MECHANISM:-gaussian}"
+DP_EPSILON="${DP_EPSILON:-}"
+DP_DELTA="${DP_DELTA:-1e-4}"
+DP_TMAX="${DP_TMAX:-200}"
+DP_D="${DP_D:-80000}"
+DP_CLIPPING_BOUND_PP="${DP_CLIPPING_BOUND_PP:-100}"
+DP_SEED="${DP_SEED:-0}"
 
 # Read paths from config (keeps script aligned if paths move); compatible with macOS bash 3.2
 IFS=$'\n' read -r ONLINE_DIR PRIVATE_DIR <<EOF
@@ -140,7 +148,18 @@ esac
 
 train_csv="${ONLINE_DIR}/train_${ASOF}_history${WINDOW_DAYS}_w${SMOOTH_CASES_WINDOW}.csv"
 test_csv="${ONLINE_DIR}/test_${ASOF}_history${WINDOW_DAYS}_w${SMOOTH_CASES_WINDOW}.csv"
-private_pt="${PRIVATE_DIR}/opentable_private_lap_${ASOF}.pt"
+private_pt="$("$PYTHON" - <<PY
+from nyc_gradmeta.utils import private_artifact_stem
+stem = private_artifact_stem(
+    "${ASOF}",
+    matched_window_with_opentable=False,
+    privacy_mode="${DP_PRIVACY_MODE}",
+    mechanism="${DP_MECHANISM}",
+    epsilon=${DP_EPSILON:-None},
+)
+print("${PRIVATE_DIR}/" + stem + ".pt")
+PY
+)"
 
 need_public_prep=0
 need_private_prep=0
@@ -178,11 +197,17 @@ fi
 if [[ "$RUN_MODE" == "public_opentable" ]]; then
   if [[ $need_private_prep -eq 1 ]]; then
     echo "==> Building OpenTable private tensor for ASOF=${ASOF}"
-    "$PYTHON" scripts/build_private_opentable_tensor.py \
-      --config "$CFG" \
-      --asof "$ASOF" \
-      --opentable_csv "$OPENTABLE_CSV" \
+    PRIVATE_ARGS=(
+      scripts/build_private_opentable_tensor.py
+      --config "$CFG"
+      --asof "$ASOF"
+      --opentable_csv "$OPENTABLE_CSV"
       --opentable_col "$OPENTABLE_COL"
+    )
+    if [[ "$DP_PRIVACY_MODE" != "none" ]]; then
+      PRIVATE_ARGS+=( --privacy_mode "$DP_PRIVACY_MODE" --mechanism "$DP_MECHANISM" --epsilon "$DP_EPSILON" --delta "$DP_DELTA" --tmax "$DP_TMAX" --denominator_d "$DP_D" --clipping_bound_pp "$DP_CLIPPING_BOUND_PP" --dp_seed "$DP_SEED" )
+    fi
+    "$PYTHON" "${PRIVATE_ARGS[@]}"
   else
     echo "==> Reusing existing private tensor: $private_pt"
   fi
@@ -215,6 +240,9 @@ if [[ $LONG -eq 1 ]]; then
 fi
 if [[ $USE_ADAPTER -eq 1 ]]; then
   TRAIN_ARGS+=( --use_adapter )
+fi
+if [[ "$DP_PRIVACY_MODE" != "none" ]]; then
+  TRAIN_ARGS+=( --privacy_mode "$DP_PRIVACY_MODE" --mechanism "$DP_MECHANISM" --epsilon "$DP_EPSILON" )
 fi
 
 "$PYTHON" "${TRAIN_ARGS[@]}"

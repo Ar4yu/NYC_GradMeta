@@ -30,6 +30,9 @@ CLIP_NORM="${CLIP_NORM:-}"
 SMOOTH_CASES_WINDOW="${SMOOTH_CASES_WINDOW:-0}"
 WINDOW_DAYS="${WINDOW_DAYS:-170}"
 MATCHED_WINDOW_WITH_OPENTABLE="${MATCHED_WINDOW_WITH_OPENTABLE:-0}"
+DP_PRIVACY_MODE="${DP_PRIVACY_MODE:-none}"
+DP_MECHANISM="${DP_MECHANISM:-gaussian}"
+DP_EPSILON="${DP_EPSILON:-}"
 NO_PRIVATE=""
 EXTRA_ARGS=()
 MODE="master_opentable"
@@ -55,6 +58,9 @@ TRAIN_ARGS=(
 )
 if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
   TRAIN_ARGS+=( --matched_window_with_opentable )
+fi
+if [ "${DP_PRIVACY_MODE}" != "none" ]; then
+  TRAIN_ARGS+=( --privacy_mode "${DP_PRIVACY_MODE}" --mechanism "${DP_MECHANISM}" --epsilon "${DP_EPSILON}" )
 fi
 if [ -n "${NO_PRIVATE}" ]; then
   TRAIN_ARGS+=( "${NO_PRIVATE}" )
@@ -87,6 +93,9 @@ if [ "${USE_ADAPTER}" = "1" ]; then
 fi
 if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
   VIS_ARGS+=( --matched_window_with_opentable )
+fi
+if [ "${DP_PRIVACY_MODE}" != "none" ]; then
+  VIS_ARGS+=( --privacy_mode "${DP_PRIVACY_MODE}" --mechanism "${DP_MECHANISM}" --epsilon "${DP_EPSILON}" )
 fi
 MPLCONFIGDIR="${MPLCONFIGDIR:-.venv/mplconfig}" "$PYTHON" "${VIS_ARGS[@]}"
 

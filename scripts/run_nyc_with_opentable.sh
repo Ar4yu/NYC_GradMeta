@@ -43,6 +43,14 @@ CLIP_NORM="${CLIP_NORM:-}"
 SMOOTH_CASES_WINDOW="${SMOOTH_CASES_WINDOW:-0}"
 WINDOW_DAYS="${WINDOW_DAYS:-170}"
 MATCHED_WINDOW_WITH_OPENTABLE="${MATCHED_WINDOW_WITH_OPENTABLE:-0}"
+DP_PRIVACY_MODE="${DP_PRIVACY_MODE:-none}"
+DP_MECHANISM="${DP_MECHANISM:-gaussian}"
+DP_EPSILON="${DP_EPSILON:-}"
+DP_DELTA="${DP_DELTA:-1e-4}"
+DP_TMAX="${DP_TMAX:-200}"
+DP_D="${DP_D:-80000}"
+DP_CLIPPING_BOUND_PP="${DP_CLIPPING_BOUND_PP:-100}"
+DP_SEED="${DP_SEED:-0}"
 if [ -x ".venv/bin/python" ]; then
   PYTHON="${PYTHON:-.venv/bin/python}"
 else
@@ -65,6 +73,9 @@ if [[ "$SKIP_PREP" -eq 0 ]]; then
   )
   if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
     OT_ARGS+=( --matched_window_with_opentable )
+  fi
+  if [ "${DP_PRIVACY_MODE}" != "none" ]; then
+    OT_ARGS+=( --privacy_mode "${DP_PRIVACY_MODE}" --mechanism "${DP_MECHANISM}" --epsilon "${DP_EPSILON}" --delta "${DP_DELTA}" --tmax "${DP_TMAX}" --denominator_d "${DP_D}" --clipping_bound_pp "${DP_CLIPPING_BOUND_PP}" --dp_seed "${DP_SEED}" )
   fi
   "$PYTHON" "${OT_ARGS[@]}"
 
@@ -100,6 +111,9 @@ TRAIN_ARGS=(
 )
 if [ "${MATCHED_WINDOW_WITH_OPENTABLE}" = "1" ]; then
   TRAIN_ARGS+=( --matched_window_with_opentable )
+fi
+if [ "${DP_PRIVACY_MODE}" != "none" ]; then
+  TRAIN_ARGS+=( --privacy_mode "${DP_PRIVACY_MODE}" --mechanism "${DP_MECHANISM}" --epsilon "${DP_EPSILON}" )
 fi
 if [ "${USE_ADAPTER}" = "1" ]; then
   TRAIN_ARGS+=( --use_adapter )

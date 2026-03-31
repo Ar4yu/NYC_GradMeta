@@ -10,9 +10,9 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 from nyc_gradmeta.utils import online_artifact_stem, run_tag_for_mode, smoothing_label
 
@@ -94,6 +94,14 @@ def plot_forecast_vs_truth(
     plt.close(fig)
 
 
+def load_metrics_json(asof: str, run_tag: str, root: Path = Path(".")) -> dict | None:
+    path = root / "outputs" / "nyc" / asof / f"metrics_{run_tag}.json"
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--asof", required=True, help="ASOF date used for forecast (YYYY-MM-DD).")
@@ -116,6 +124,19 @@ def main():
         action="store_true",
         help="Use matched-window split metadata and run-tag-specific forecast artifacts.",
     )
+    ap.add_argument(
+        "--privacy_mode",
+        choices=["none", "event", "restaurant"],
+        default="none",
+        help="Privacy mode for DP OpenTable run tags.",
+    )
+    ap.add_argument(
+        "--mechanism",
+        choices=["gaussian"],
+        default="gaussian",
+        help="Privacy mechanism for DP OpenTable run tags.",
+    )
+    ap.add_argument("--epsilon", type=float, default=None, help="Privacy epsilon for DP OpenTable run tags.")
     args = ap.parse_args()
 
     with open(args.config, "r") as f:
@@ -128,6 +149,9 @@ def main():
         use_adapter=bool(args.use_adapter),
         smooth_cases_window=args.smooth_cases_window,
         matched_window_with_opentable=args.matched_window_with_opentable,
+        privacy_mode=args.privacy_mode,
+        mechanism=args.mechanism,
+        epsilon=args.epsilon,
     )
     test_csv = online_dir / (
         f"{online_artifact_stem('test', args.asof, args.window_days, args.smooth_cases_window, matched_window_with_opentable=args.matched_window_with_opentable)}.csv"
@@ -137,6 +161,13 @@ def main():
     )
     with open(split_info_path, "r", encoding="utf-8") as f:
         split_info = json.load(f)
+    metrics = load_metrics_json(args.asof, run_tag)
+    privacy_bits = []
+    if metrics is not None and metrics.get("privacy_mode") not in (None, "", "none"):
+        privacy_bits.append(f"{metrics.get('mechanism')} {metrics.get('privacy_mode')} DP")
+        privacy_bits.append(f"eps={metrics.get('epsilon')}")
+        if metrics.get("sigma_pp") is not None:
+            privacy_bits.append(f"sigma={float(metrics['sigma_pp']):.3f} pp")
 
     out_path = Path("outputs") / "nyc" / args.asof / f"forecast_vs_truth_{run_tag}.png"
     plot_forecast_vs_truth(
@@ -150,6 +181,7 @@ def main():
             f"Window {split_info.get('window_start')} to {split_info.get('window_end')} | "
             f"Test {split_info.get('test_start')} to {split_info.get('test_end')} | "
             f"Requested ASOF {args.asof} | {smoothing_label(args.smooth_cases_window)}"
+            + (f" | {' | '.join(privacy_bits)}" if privacy_bits else "")
         ),
     )
     print("Saved visualization to:", out_path)
