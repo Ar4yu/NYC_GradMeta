@@ -1,0 +1,13 @@
+condition_label,privacy_mode,epsilon,rmse,mae,mape,sigma_pp,K,notes
+A: public-only baseline,none,,126.78001661253305,113.3240100315639,32.739030550752915,,,Public-only matched baseline.
+B: public + OpenTable (non-private),none,,64.33216967208595,49.621803283691406,17.279345368032896,,,Non-private OpenTable reference.
+C: public + OpenTable with Gaussian DP,event,1.0,160.56080313657614,143.55575016566686,48.146940206628884,1.0859030759746926,159,Event-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,event,2.0,147.3097753384828,131.25423649379186,44.07683699926971,0.5429515379873463,159,Event-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,event,4.0,42.72846575897132,38.50791713169643,11.652532168913075,0.27147576899367315,159,Event-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,event,8.0,85.70895575504697,70.98228781563895,20.14003172780536,0.13573788449683657,159,Event-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,event,16.0,81.49119124451356,65.13429151262555,18.07796712423014,0.06786894224841829,159,Event-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,restaurant,1.0,58.65476279205224,55.03894805908203,17.323558811659215,13.69271678577325,159,Restaurant-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,restaurant,2.0,53.68693868398866,47.09053911481585,13.815561238990087,6.846358392886625,159,Restaurant-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,restaurant,4.0,74.7908616696626,57.550510951450896,20.187274197356196,3.4231791964433125,159,Restaurant-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,restaurant,8.0,99.34871593866795,83.9949449811663,23.757025480564224,1.7115895982216562,159,Restaurant-level Gaussian DP.
+C: public + OpenTable with Gaussian DP,restaurant,16.0,52.789583463394614,49.212271554129465,15.571686985058216,0.8557947991108281,159,Restaurant-level Gaussian DP.

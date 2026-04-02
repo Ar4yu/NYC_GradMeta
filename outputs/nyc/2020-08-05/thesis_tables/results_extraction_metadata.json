@@ -1,0 +1,51 @@
+{
+  "extraction_timestamp": "2026-04-02T00:21:24.955076+00:00",
+  "runs_included": [
+    "public_only_adapter_w0_matched_ot",
+    "public_only_adapter_w3_matched_ot",
+    "public_only_adapter_w7_matched_ot",
+    "public_opentable_adapter_w0_matched_ot",
+    "public_opentable_adapter_w3_matched_ot",
+    "public_opentable_adapter_w7_matched_ot",
+    "public_opentable_dp_gaussian_event_eps1_w7_matched_ot",
+    "public_opentable_dp_gaussian_event_eps2_w7_matched_ot",
+    "public_opentable_dp_gaussian_event_eps4_w7_matched_ot",
+    "public_opentable_dp_gaussian_event_eps8_w7_matched_ot",
+    "public_opentable_dp_gaussian_event_eps16_w7_matched_ot",
+    "public_opentable_dp_gaussian_restaurant_eps1_w7_matched_ot",
+    "public_opentable_dp_gaussian_restaurant_eps2_w7_matched_ot",
+    "public_opentable_dp_gaussian_restaurant_eps4_w7_matched_ot",
+    "public_opentable_dp_gaussian_restaurant_eps8_w7_matched_ot",
+    "public_opentable_dp_gaussian_restaurant_eps16_w7_matched_ot"
+  ],
+  "missing_fields": {
+    "public_only_adapter_w0_matched_ot": [
+      "run_metadata_json",
+      "test_metrics.mse"
+    ],
+    "public_only_adapter_w3_matched_ot": [
+      "run_metadata_json",
+      "test_metrics.mse"
+    ],
+    "public_opentable_adapter_w0_matched_ot": [
+      "run_metadata_json",
+      "test_metrics.mse"
+    ],
+    "public_opentable_adapter_w3_matched_ot": [
+      "run_metadata_json",
+      "test_metrics.mse"
+    ],
+    "public_opentable_adapter_w7_matched_ot": [
+      "run_metadata_json",
+      "test_metrics.mse"
+    ]
+  },
+  "source_of_truth": "per-run metrics json + run metadata json",
+  "warnings": [
+    "Missing run metadata JSON for public_only_adapter_w0_matched_ot; metrics JSON used for table fields.",
+    "Missing run metadata JSON for public_only_adapter_w3_matched_ot; metrics JSON used for table fields.",
+    "Missing run metadata JSON for public_opentable_adapter_w0_matched_ot; metrics JSON used for table fields.",
+    "Missing run metadata JSON for public_opentable_adapter_w3_matched_ot; metrics JSON used for table fields.",
+    "Missing run metadata JSON for public_opentable_adapter_w7_matched_ot; metrics JSON used for table fields."
+  ]
+}

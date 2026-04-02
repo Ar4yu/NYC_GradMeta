@@ -1,0 +1,7 @@
+condition_label,smoothing_window,rmse,mae,mape,qualitative_note
+A: public-only baseline,0,648.8870052093379,628.3805106026786,237.51327550615332,"Better than the public-only w=3 run, but weaker than the public-only w=7 run."
+A: public-only baseline,3,4679.261364646586,3806.7816494532995,1385.1325487793245,Very unstable relative to w=0 and w=7.
+A: public-only baseline,7,126.78001661253305,113.3240100315639,32.739030550752915,Best public-only operating point among the matched smoothing runs.
+B: public + OpenTable (non-private),0,191.01385974356987,167.18595123291016,70.4824134111932,"Improves over the public-only w=0 baseline, but is weaker than the OpenTable w=7 run."
+B: public + OpenTable (non-private),3,2319.0305733072655,1780.5190751211983,655.8655751489575,Very unstable relative to w=0 and w=7.
+B: public + OpenTable (non-private),7,64.33216967208595,49.621803283691406,17.279345368032896,Best non-private RMSE in the matched A/B comparison.
