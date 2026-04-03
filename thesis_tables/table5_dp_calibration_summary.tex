@@ -1,0 +1,29 @@
+\begin{table}[t]
+\centering
+\scriptsize
+\begin{threeparttable}
+\caption{Differential privacy calibration and implementation summary}
+\label{tab:dp_calibration}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.21\textwidth}>{\raggedright\arraybackslash}p{0.34\textwidth}>{\raggedright\arraybackslash}X}
+\toprule
+Item & Event-level DP & Restaurant-level DP \\
+\midrule
+Protected unit & One restaurant contribution on one day & One restaurant contribution across the full matched window \\
+Release object & City-level OpenTable YoY seated-diner series & City-level OpenTable YoY seated-diner series \\
+Injection point & Gaussian noise added before patch lifting & Gaussian noise added before patch lifting \\
+Clip bound & 100.0 percentage points & 100.0 percentage points \\
+Post-clip & Yes; post-noise clip to \(\pm 100\) pp & Yes; post-noise clip to \(\pm 100\) pp \\
+Scaling rule & Released YoY divided by fixed \texttt{clipping\_bound\_pp} & Released YoY divided by fixed \texttt{clipping\_bound\_pp} \\
+$K$ & 159 & 159 \\
+Epsilon grid & $\{1,2,4,8,16\}$ & $\{1,2,4,8,16\}$ \\
+Delta & 0.0001 & 0.0001 \\
+Sensitivity form & $\Delta_2 = 0.25$ pp & $\Delta_2 = 0.25\sqrt{159}$ pp \\
+Noise calibration summary & $\epsilon=1$: 1.0859030759746926; $\epsilon=2$: 0.5429515379873463; $\epsilon=4$: 0.27147576899367315; $\epsilon=8$: 0.13573788449683657; $\epsilon=16$: 0.06786894224841829 & $\epsilon=1$: 13.69271678577325; $\epsilon=2$: 6.846358392886625; $\epsilon=4$: 3.4231791964433125; $\epsilon=8$: 1.7115895982216562; $\epsilon=16$: 0.8557947991108281 \\
+\bottomrule
+\end{tabularx}
+\begin{tablenotes}[flushleft]
+\footnotesize
+\item The committed builder clips the city-level YoY series, adds Gaussian noise at the city level, applies a public post-noise clip, rescales by the fixed clip bound, and only then lifts to the 16-patch tensor with population-share weights.
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

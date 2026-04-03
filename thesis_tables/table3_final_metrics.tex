@@ -1,0 +1,33 @@
+\begin{table}[t]
+\centering
+\scriptsize
+\begin{threeparttable}
+\caption{Final matched-window forecasting metrics}
+\label{tab:final_metrics}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{0.06\textwidth}>{\raggedleft\arraybackslash}p{0.09\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}}
+\toprule
+Condition / run family & $w$ & $\epsilon$ & RMSE & MAE & MAPE \\
+\midrule
+\multicolumn{6}{l}{\textit{Non-private matched runs}} \\
+Public only & 0 & \textemdash & 648.8870052093379 & 628.3805106026786 & 237.51327550615332 \\
+Public + OpenTable & 0 & \textemdash & 191.01385974356987 & 167.18595123291016 & 70.4824134111932 \\
+Public only & 3 & \textemdash & 4679.261364646586 & 3806.7816494532995 & 1385.1325487793245 \\
+Public + OpenTable & 3 & \textemdash & 2319.0305733072655 & 1780.5190751211983 & 655.8655751489575 \\
+Public only & 7 & \textemdash & 126.78001661253305 & 113.3240100315639 & 32.739030550752915 \\
+Public + OpenTable & 7 & \textemdash & 64.33216967208595 & 49.621803283691406 & 17.279345368032896 \\
+\multicolumn{6}{l}{\textit{Event-level Gaussian DP (w=7)}} \\
+Event-DP OpenTable & 7 & 1 & 160.56080313657614 & 143.55575016566686 & 48.146940206628884 \\
+Event-DP OpenTable & 7 & 2 & 147.3097753384828 & 131.25423649379186 & 44.07683699926971 \\
+Event-DP OpenTable & 7 & 4 & 42.72846575897132 & 38.50791713169643 & 11.652532168913075 \\
+Event-DP OpenTable & 7 & 8 & 85.70895575504697 & 70.98228781563895 & 20.14003172780536 \\
+Event-DP OpenTable & 7 & 16 & 81.49119124451356 & 65.13429151262555 & 18.07796712423014 \\
+\multicolumn{6}{l}{\textit{Restaurant-level Gaussian DP (w=7)}} \\
+Restaurant-DP OpenTable & 7 & 1 & 58.65476279205224 & 55.03894805908203 & 17.323558811659215 \\
+Restaurant-DP OpenTable & 7 & 2 & 53.68693868398866 & 47.09053911481585 & 13.815561238990087 \\
+Restaurant-DP OpenTable & 7 & 4 & 74.7908616696626 & 57.550510951450896 & 20.187274197356196 \\
+Restaurant-DP OpenTable & 7 & 8 & 99.34871593866795 & 83.9949449811663 & 23.757025480564224 \\
+Restaurant-DP OpenTable & 7 & 16 & 52.789583463394614 & 49.212271554129465 & 15.571686985058216 \\
+\bottomrule
+\end{tabularx}
+\end{threeparttable}
+\end{table}
