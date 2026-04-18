@@ -1,19 +1,19 @@
-\begin{table}[t]
+\begin{table}[!htbp]
 \centering
-\scriptsize
+\footnotesize
 \begin{threeparttable}
 \caption{Forecasting modules and staged training protocol}
 \label{tab:module_training}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.19\textwidth}>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.20\textwidth}>{\raggedright\arraybackslash}p{0.12\textwidth}>{\raggedright\arraybackslash}X}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.20\textwidth}>{\raggedright\arraybackslash}p{0.23\textwidth}>{\raggedright\arraybackslash}p{0.20\textwidth}>{\raggedright\arraybackslash}p{0.13\textwidth}>{\raggedright\arraybackslash}X}
 \toprule
-Module & Main inputs & Main outputs & Timescale & Role \\
+Module / stage & Main inputs & Main outputs & Timescale & Role \\
 \midrule
-ParameterNN (implemented as \texttt{CalibNNTwoEncoderThreeOutputs}) & Private tensor \([P,T,1]\), public features \([T,F]\), identity metadata, supervised lag context & Weekly epi parameters \([W,7]\), seed vector \([P]\), beta matrix \([P,P]\) & Daily histories \(\rightarrow\) weekly parameters & Maps matched public/private histories into simulator parameters and initial conditions. \\
-Metapopulation SEIRM simulator (\texttt{MetapopulationSEIRMBeta}) & Weekly epi parameters, seed vector, beta matrix, population vector, contact matrix & Daily patch infections aggregated to city-wide case predictions & Daily & Mechanistic backbone used to generate the base forecast trajectory. \\
-GRU residual adapter (\texttt{ErrorCorrectionAdapter}) & Base city-wide simulator prediction sequence & Additive residual correction sequence & Daily & Learns a lightweight error-correction term on top of the mechanistic forecast. \\
-Training stage 1 (\texttt{gradmeta}) & ParameterNN + simulator; adapter frozen/off & Best parameter-network checkpoint & Full matched train window & Optimizes simulator fit loss (RMSE on the smoothed train target in the thesis runs). \\
-Training stage 2 (\texttt{adapter}) & Frozen simulator outputs + adapter residual target & Best adapter checkpoint & Full matched train window & Fits the residual adapter with MSE loss on the default smoothed residual target. \\
-Training stage 3 (\texttt{together}) & ParameterNN + simulator + adapter jointly & Final joint checkpoints and evaluation artifacts & Full matched train window & Jointly fine-tunes both modules with an annealed blend of simulator fit loss and adapter auxiliary loss. \\
+ParameterNN & Private tensor, public features, lagged target context & Weekly epi parameters, seed vector, beta matrix & Daily histories \(\rightarrow\) weekly parameters & Maps matched histories into simulator parameters and initial conditions. \\
+Metapopulation SEIRM simulator & Weekly epi parameters, seed vector, beta matrix, population vector, contact matrix & Daily city-level forecast & Daily & Mechanistic forecast backbone. \\
+GRU residual adapter & Base simulator forecast sequence & Residual correction sequence & Daily & Learns an additive correction on top of the mechanistic forecast. \\
+Training stage 1 (\texttt{gradmeta}) & ParameterNN + simulator; adapter frozen/off & Best parameter-network checkpoint & Full matched train window & Fits the mechanistic model to the smoothed training target. \\
+Training stage 2 (\texttt{adapter}) & Frozen simulator outputs + adapter residual target & Best adapter checkpoint & Full matched train window & Fits the residual adapter on the default smoothed residual target. \\
+Training stage 3 (\texttt{together}) & ParameterNN + simulator + adapter jointly & Final joint checkpoints and evaluation artifacts & Full matched train window & Jointly fine-tunes the mechanistic and residual components. \\
 \bottomrule
 \end{tabularx}
 \end{threeparttable}

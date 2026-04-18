@@ -1,32 +1,32 @@
-\begin{table}[t]
+\begin{table}[!htbp]
 \centering
-\scriptsize
+\footnotesize
 \begin{threeparttable}
 \caption{Final matched-window forecasting metrics}
 \label{tab:final_metrics}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{0.06\textwidth}>{\raggedleft\arraybackslash}p{0.09\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\centering\arraybackslash}p{0.06\textwidth}>{\centering\arraybackslash}p{0.08\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}}
 \toprule
 Condition / run family & $w$ & $\epsilon$ & RMSE & MAE & MAPE \\
 \midrule
 \multicolumn{6}{l}{\textit{Non-private matched runs}} \\
-Public only & 0 & \textemdash & 648.8870052093379 & 628.3805106026786 & 237.51327550615332 \\
-Public + OpenTable & 0 & \textemdash & 191.01385974356987 & 167.18595123291016 & 70.4824134111932 \\
-Public only & 3 & \textemdash & 4679.261364646586 & 3806.7816494532995 & 1385.1325487793245 \\
-Public + OpenTable & 3 & \textemdash & 2319.0305733072655 & 1780.5190751211983 & 655.8655751489575 \\
-Public only & 7 & \textemdash & 126.78001661253305 & 113.3240100315639 & 32.739030550752915 \\
-Public + OpenTable & 7 & \textemdash & 64.33216967208595 & 49.621803283691406 & 17.279345368032896 \\
+Public only & 0 & \textemdash & 648.8870 & 628.3805 & 237.5133 \\
+Public + OpenTable & 0 & \textemdash & 191.0139 & 167.1860 & 70.4824 \\
+Public only & 3 & \textemdash & 4679.2614 & 3806.7816 & 1385.1325 \\
+Public + OpenTable & 3 & \textemdash & 2319.0306 & 1780.5191 & 655.8656 \\
+Public only & 7 & \textemdash & 126.7800 & 113.3240 & 32.7390 \\
+Public + OpenTable & 7 & \textemdash & 64.3322 & 49.6218 & 17.2793 \\
 \multicolumn{6}{l}{\textit{Event-level Gaussian DP (w=7)}} \\
-Event-DP OpenTable & 7 & 1 & 160.56080313657614 & 143.55575016566686 & 48.146940206628884 \\
-Event-DP OpenTable & 7 & 2 & 147.3097753384828 & 131.25423649379186 & 44.07683699926971 \\
-Event-DP OpenTable & 7 & 4 & 42.72846575897132 & 38.50791713169643 & 11.652532168913075 \\
-Event-DP OpenTable & 7 & 8 & 85.70895575504697 & 70.98228781563895 & 20.14003172780536 \\
-Event-DP OpenTable & 7 & 16 & 81.49119124451356 & 65.13429151262555 & 18.07796712423014 \\
+Event-DP OpenTable & 7 & 1 & 160.5608 & 143.5558 & 48.1469 \\
+Event-DP OpenTable & 7 & 2 & 147.3098 & 131.2542 & 44.0768 \\
+Event-DP OpenTable & 7 & 4 & 42.7285 & 38.5079 & 11.6525 \\
+Event-DP OpenTable & 7 & 8 & 85.7090 & 70.9823 & 20.1400 \\
+Event-DP OpenTable & 7 & 16 & 81.4912 & 65.1343 & 18.0780 \\
 \multicolumn{6}{l}{\textit{Restaurant-level Gaussian DP (w=7)}} \\
-Restaurant-DP OpenTable & 7 & 1 & 58.65476279205224 & 55.03894805908203 & 17.323558811659215 \\
-Restaurant-DP OpenTable & 7 & 2 & 53.68693868398866 & 47.09053911481585 & 13.815561238990087 \\
-Restaurant-DP OpenTable & 7 & 4 & 74.7908616696626 & 57.550510951450896 & 20.187274197356196 \\
-Restaurant-DP OpenTable & 7 & 8 & 99.34871593866795 & 83.9949449811663 & 23.757025480564224 \\
-Restaurant-DP OpenTable & 7 & 16 & 52.789583463394614 & 49.212271554129465 & 15.571686985058216 \\
+Restaurant-DP OpenTable & 7 & 1 & 58.6548 & 55.0389 & 17.3236 \\
+Restaurant-DP OpenTable & 7 & 2 & 53.6869 & 47.0905 & 13.8156 \\
+Restaurant-DP OpenTable & 7 & 4 & 74.7909 & 57.5505 & 20.1873 \\
+Restaurant-DP OpenTable & 7 & 8 & 99.3487 & 83.9949 & 23.7570 \\
+Restaurant-DP OpenTable & 7 & 16 & 52.7896 & 49.2123 & 15.5717 \\
 \bottomrule
 \end{tabularx}
 \end{threeparttable}

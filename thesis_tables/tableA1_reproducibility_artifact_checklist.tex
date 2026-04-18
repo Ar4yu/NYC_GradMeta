@@ -1,28 +1,28 @@
-\begin{table}[t]
+\begin{table}[!htbp]
 \centering
-\scriptsize
+\footnotesize
 \begin{threeparttable}
 \caption{Reproducibility artifact checklist}
-\label{tab:artifact_checklist}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.30\textwidth}>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}X}
+\label{tab:reproducibility_checklist}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.28\textwidth}>{\raggedright\arraybackslash}p{0.24\textwidth}>{\raggedright\arraybackslash}p{0.17\textwidth}>{\raggedright\arraybackslash}X}
 \toprule
 Artifact / pattern & Why it matters & Use in thesis & Status note \\
 \midrule
-configs/nyc.json & Experiment configuration and path contract & Tables 2, 4, and 5 & present \\
-scripts/build\_data.sh & Public-data build entrypoint & Table 1 and Appendix A1 & present \\
-data/processed/nyc\_master\_daily.csv & Canonical public daily panel & Tables 1 and 2 & present \\
-data/processed/opentable\_yoy\_daily.csv & Processed city-level OpenTable signal & Tables 1, 2, and 5 & present \\
-scripts/prepare\_online\_nyc.py and data/processed/online/* & Matched-window public train/test artifacts and feature maps & Tables 1 and 2 & present; Committed script plus matched-window artifact directory present. \\
-data/processed/online/split\_info\_2020-08-05\_matched\_ot\_w\{0,3,7\}.json & Matched-window evaluation contract & Table 2 & 3/3 present \\
-scripts/build\_private\_opentable\_tensor.py & DP and non-private OpenTable tensor builder & Tables 1 and 5 & present \\
-data/processed/private/opentable\_private\_observed\_2020-08-05\_matched\_ot\_series.csv & Non-private released OpenTable series & Tables 1 and 5 & present \\
-data/processed/private/opentable\_private\_observed\_dp\_gaussian\_\{event|restaurant\}\_eps\{1,2,4,8,16\}\_2020-08-05\_matched\_ot\_series.csv & Committed DP released series for the epsilon sweep & Tables 3 and 5 & 10/10 present \\
-scripts/run\_matched\_ab\_grid.sh & Non-private comparison launcher & Table 2 and Section 6 reproduction & present \\
-scripts/run\_matched\_dp\_grid\_w7.sh & Matched DP sweep launcher & Tables 2, 3, and 5 & present \\
-outputs/nyc/2020-08-05/metrics\_<run\_tag>.json & Authoritative per-run metrics and DP metadata & Tables 3 and 5 & present; 16 thesis-facing run records present; 1 additional smoketest artifact present. \\
-outputs/nyc/2020-08-05/fit\_train\_test\_<run\_tag>.csv & Per-run fitted and held-out trajectories & Appendix reproducibility audit & present; 16 thesis-facing trajectory files present; 1 additional smoketest file present. \\
-outputs/nyc/2020-08-05/metrics\_summary.csv & Convenience aggregate summary & Cross-check only; not source of truth for Table 3 & present \\
-scripts/plot\_matched\_dp\_summary.py and outputs/nyc/2020-08-05/rmse\_vs\_epsilon\_*.png & DP summary plotting script and committed outputs & Appendix reproducibility audit & present; Plotting script present with committed RMSE-vs-epsilon figures. \\
+configs/nyc.json & Experiment configuration and path contract & Tables 2, 4, and 5 & Primary configuration record \\
+scripts/build\_data.sh & Public-data build entrypoint & Table 1 and Appendix A1 & Canonical public-data wrapper \\
+data/processed/nyc\_master\_daily.csv & Canonical public daily panel & Tables 1 and 2 & Master public data table \\
+data/processed/opentable\_yoy\_daily.csv & Processed city-level OpenTable signal & Tables 1, 2, and 5 & Canonical OpenTable series \\
+scripts/prepare\_online\_nyc.py and data/processed/online/* & Matched-window public train/test artifacts and feature maps & Tables 1 and 2 & Primary matched-window preparation record \\
+data/processed/online/split\_info\_2020-08-05\_matched\_ot\_w\{0,3,7\}.json & Matched-window evaluation contract & Table 2 & Matched-window split records \\
+scripts/build\_private\_opentable\_tensor.py & DP and non-private OpenTable tensor builder & Tables 1 and 5 & Canonical private-signal builder \\
+data/processed/private/opentable\_private\_observed\_2020-08-05\_matched\_ot\_series.csv & Non-private released OpenTable series & Tables 1 and 5 & Non-private release record \\
+data/processed/private/opentable\_private\_observed\_dp\_gaussian\_\{event|restaurant\}\_eps\{1,2,4,8,16\}\_2020-08-05\_matched\_ot\_series.csv & DP released series across privacy settings & Tables 3 and 5 & DP release family \\
+scripts/run\_matched\_ab\_grid.sh & Non-private comparison launcher & Table 2 and Section 6 reproduction & Canonical experiment wrapper \\
+scripts/run\_matched\_dp\_grid\_w7.sh & Matched DP sweep launcher & Tables 2, 3, and 5 & Canonical DP experiment wrapper \\
+outputs/nyc/2020-08-05/metrics\_<run\_tag>.json & Per-run metrics and DP metadata & Tables 3 and 5 & Authoritative per-run results record \\
+outputs/nyc/2020-08-05/fit\_train\_test\_<run\_tag>.csv & Per-run fitted and held-out trajectories & Appendix reproducibility audit & Per-run trajectory record \\
+outputs/nyc/2020-08-05/metrics\_summary.csv & Aggregate metrics summary & Cross-check only & Convenience summary only \\
+scripts/plot\_matched\_dp\_summary.py and outputs/nyc/2020-08-05/rmse\_vs\_epsilon\_*.png & Privacy-utility summary plotting & Appendix reproducibility audit & Summary plotting record \\
 \bottomrule
 \end{tabularx}
 \end{threeparttable}

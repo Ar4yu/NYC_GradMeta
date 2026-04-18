@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from matplotlib.patches import Patch
 
 ROOT = Path(__file__).resolve().parents[1]
 FIG_DIR = ROOT / "thesis_visualizations"
+FIG_EXT = "pdf"
+FIG_DPI = 300
 ONLINE_DIR = ROOT / "data" / "processed" / "online"
 PRIVATE_DIR = ROOT / "data" / "processed" / "private"
 OUT_DIR = ROOT / "outputs" / "nyc" / "2020-08-05"
@@ -47,6 +50,19 @@ def load_json(path: Path) -> dict:
 
 def load_metrics(run_name: str) -> dict:
     return load_json(OUT_DIR / f"metrics_{run_name}.json")
+
+
+def figure_path(stem: str) -> Path:
+    return FIG_DIR / f"{stem}.{FIG_EXT}"
+
+
+def save_figure(fig, stem: str) -> Path:
+    out_path = figure_path(stem)
+    save_kwargs = {"bbox_inches": "tight"}
+    if FIG_EXT.lower() != "pdf":
+        save_kwargs["dpi"] = FIG_DPI
+    fig.savefig(out_path, **save_kwargs)
+    return out_path
 
 
 def fig2_timeline() -> tuple[Path, list[str]]:
@@ -117,8 +133,7 @@ def fig2_timeline() -> tuple[Path, list[str]]:
     ax.legend(handles=legend_handles, loc="lower right", frameon=False)
     fig.tight_layout()
 
-    out_path = FIG_DIR / "fig2_matched_window_timeline.pdf"
-    fig.savefig(out_path, bbox_inches="tight")
+    out_path = save_figure(fig, "fig2_matched_window_timeline")
     plt.close(fig)
 
     used = [
@@ -179,8 +194,7 @@ def fig3_ab_forecasts() -> tuple[Path, list[str]]:
     fig.suptitle("Matched-Window Forecast Comparison Across Smoothing Regimes", y=0.992)
     fig.tight_layout(rect=[0, 0, 1, 0.935])
 
-    out_path = FIG_DIR / "fig3_ab_forecast_comparison_w0_w3_w7.pdf"
-    fig.savefig(out_path, bbox_inches="tight")
+    out_path = save_figure(fig, "fig3_ab_forecast_comparison_w0_w3_w7")
     plt.close(fig)
     return out_path, used
 
@@ -237,8 +251,7 @@ def fig4_smoothing_summary() -> tuple[Path, list[str]]:
     fig.suptitle("Smoothing Sensitivity in the Matched A/B Comparison", y=1.02)
     fig.tight_layout()
 
-    out_path = FIG_DIR / "fig4_smoothing_sensitivity_summary.pdf"
-    fig.savefig(out_path, bbox_inches="tight")
+    out_path = save_figure(fig, "fig4_smoothing_sensitivity_summary")
     plt.close(fig)
 
     used = [str(summary_path.relative_to(ROOT))]
@@ -276,8 +289,7 @@ def fig5_original_vs_dp() -> tuple[Path, list[str]]:
     fig.suptitle("OpenTable Signal Before and After Gaussian DP", y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
 
-    out_path = FIG_DIR / "fig5_opentable_original_vs_dp_noised.pdf"
-    fig.savefig(out_path, bbox_inches="tight")
+    out_path = save_figure(fig, "fig5_opentable_original_vs_dp_noised")
     plt.close(fig)
     used = [
         str((PRIVATE_DIR / "opentable_private_observed_2020-08-05_matched_ot_series.csv").relative_to(ROOT)),
@@ -341,13 +353,31 @@ def fig6_privacy_utility() -> tuple[Path, list[str]]:
     ax.legend(loc="best", frameon=False)
     fig.tight_layout()
 
-    out_path = FIG_DIR / "fig6_privacy_utility_tradeoff_curves.pdf"
-    fig.savefig(out_path, bbox_inches="tight")
+    out_path = save_figure(fig, "fig6_privacy_utility_tradeoff_curves")
     plt.close(fig)
     return out_path, used
 
 
 def main() -> None:
+    global FIG_DIR, FIG_EXT, FIG_DPI
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--format", default="pdf", choices=["pdf", "png"], help="Output figure format.")
+    ap.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for rendered figures. Defaults to thesis_visualizations for pdf and thesis_visualizations_png for png.",
+    )
+    ap.add_argument("--dpi", type=int, default=300, help="Raster DPI used for non-PDF outputs.")
+    args = ap.parse_args()
+
+    FIG_EXT = args.format
+    FIG_DPI = int(args.dpi)
+    if args.output_dir:
+        FIG_DIR = (ROOT / args.output_dir).resolve() if not Path(args.output_dir).is_absolute() else Path(args.output_dir)
+    elif FIG_EXT == "png":
+        FIG_DIR = ROOT / "thesis_visualizations_png"
+
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
     created = []

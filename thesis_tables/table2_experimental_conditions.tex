@@ -1,22 +1,22 @@
-\begin{table}[t]
+\begin{table}[!htbp]
 \centering
-\scriptsize
+\footnotesize
 \begin{threeparttable}
 \caption{Experimental conditions and comparison ladder}
 \label{tab:experimental_conditions}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.17\textwidth}>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.14\textwidth}>{\raggedright\arraybackslash}p{0.14\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}X}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.25\textwidth}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{0.17\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}}
 \toprule
-Condition & Inputs & Privacy mode & Smoothing window & Horizon / evaluation contract & Notes \\
+Condition & Inputs & Privacy mode & Setting \\
 \midrule
-Public-only baseline & Public target history and public covariates; OpenTable branch disabled & None & $w \in \{0,3,7\}$ & 159-day matched overlap; train 2020-02-29 to 2020-07-08; test 2020-07-09 to 2020-08-05 (28d) & A arm of the matched A/B ladder; same dates as all OpenTable conditions. \\
-Non-private OpenTable & Public daily covariates + matched non-private OpenTable tensor & None & $w \in \{0,3,7\}$ & 159-day matched overlap; train 2020-02-29 to 2020-07-08; test 2020-07-09 to 2020-08-05 (28d) & B arm of the matched A/B ladder; contrasts directly with the public-only baseline. \\
-Event-level Gaussian DP OpenTable & Public daily covariates + Gaussian-DP OpenTable tensor & Gaussian DP (event) & $w=7$; $\epsilon \in \{1,2,4,8,16\}$ & 159-day matched overlap; train 2020-02-29 to 2020-07-08; test 2020-07-09 to 2020-08-05 (28d) & Noise injected before patch lifting; same matched horizon and train/test cut as the non-private reference. \\
-Restaurant-level Gaussian DP OpenTable & Public daily covariates + Gaussian-DP OpenTable tensor & Gaussian DP (restaurant) & $w=7$; $\epsilon \in \{1,2,4,8,16\}$ & 159-day matched overlap; train 2020-02-29 to 2020-07-08; test 2020-07-09 to 2020-08-05 (28d) & Same matched contract as above, with restaurant-level sensitivity and Gaussian calibration. \\
+Public-only baseline & Public target history + public covariates & None & $w \in \{0,3,7\}$ \\
+Non-private OpenTable & Public target history + public covariates + OpenTable tensor & None & $w \in \{0,3,7\}$ \\
+Event-level Gaussian DP OpenTable & Public target history + public covariates + DP OpenTable tensor & Gaussian DP (event) & $w=7$, $\epsilon \in \{1,2,4,8,16\}$ \\
+Restaurant-level Gaussian DP OpenTable & Public target history + public covariates + DP OpenTable tensor & Gaussian DP (restaurant) & $w=7$, $\epsilon \in \{1,2,4,8,16\}$ \\
 \bottomrule
 \end{tabularx}
 \begin{tablenotes}[flushleft]
 \footnotesize
-\item The matched-window contract is identical across w=0, 3, and 7 split metadata: joint window 2020-02-29 to 2020-08-05 (w=0), 2020-02-29 to 2020-08-05 (w=3), and 2020-02-29 to 2020-08-05 (w=7).
+\item All conditions use the same matched-window contract: matched window 2020-02-29 to 2020-08-05; train 2020-02-29 to 2020-07-08; test 2020-07-09 to 2020-08-05; 28-day forecast horizon.
 \end{tablenotes}
 \end{threeparttable}
 \end{table}

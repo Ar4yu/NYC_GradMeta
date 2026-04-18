@@ -57,7 +57,7 @@ def read_json(path: Path) -> dict:
 
 
 def metric_str(value) -> str:
-    return repr(float(value))
+    return f"{float(value):.4f}"
 
 
 def read_csv_shape(path: Path) -> tuple[int, int]:
@@ -80,7 +80,7 @@ def format_table(
     size_cmd: str = r"\footnotesize",
 ) -> str:
     lines = [
-        r"\begin{table}[t]",
+        r"\begin{table}[!htbp]",
         r"\centering",
         size_cmd,
         r"\begin{threeparttable}",
@@ -135,52 +135,50 @@ def table1() -> tuple[str, list[str], list[str]]:
     rows = [
         [
             r"Public target / master daily table",
-            latex_escape(f"daily; {master_shape[0]}x{master_shape[1]}"),
-            r"Merges cases, deaths, hospitalizations, mobility, and trend signals into one contiguous daily panel; OpenTable kept separate.",
-            r"Canonical public source table; supplies the case target and upstream public feature columns.",
+            latex_escape(f"Daily panel ({master_shape[0]} rows, {master_shape[1]} columns)"),
+            r"Integrates cases, hospitalizations, deaths, mobility, and trend signals in one contiguous public daily table.",
+            r"Supplies the case target and the source columns for public features.",
         ],
         [
-            r"Public covariates (\texttt{train/test\_*} + \texttt{public\_feature\_map\_*})",
-            latex_escape(f"daily matched train matrix; {train_shape[0]} rows, 10 mapped public covariates"),
+            r"Public covariates",
+            latex_escape(f"Daily matched design; 10 mapped covariates over {train_shape[0]} train days"),
             latex_escape(
-                "Numeric public columns are selected from the master table after excluding date and target fields, then renamed pub_0..pub_9; the train artifact also carries date and target-history fields."
+                "Numeric public predictors are selected from the master table, excluding date and target fields, then mapped to pub_0..pub_9."
             ),
-            latex_escape(f"Public encoder input; schema confirmed by feature map: {covariate_list}."),
+            latex_escape(f"Public encoder input; feature map resolves the covariate set: {covariate_list}."),
         ],
         [
             r"OpenTable city-level YoY signal",
-            latex_escape(f"daily city series; {opentable_shape[0]}x{opentable_shape[1]}"),
-            r"Processed to a single observed YoY seated-diner series (\texttt{yoy\_seated\_diner}) before matched-window restriction.",
-            r"Authoritative city-level private-source input before clipping, scaling, and patch lifting.",
+            latex_escape(f"Daily city series ({opentable_shape[0]} rows)"),
+            r"Reduced to the observed \texttt{yoy\_seated\_diner} series before matched-window restriction.",
+            r"City-level private-source signal before clipping, scaling, and patch lifting.",
         ],
         [
             r"Patch-aligned OpenTable tensor / private branch representation",
-            latex_escape(
-                f"series csv={private_series_shape[0]}x{private_series_shape[1]}; tensor={private_tensor_shape[0]}x{private_tensor_shape[1]}"
-            ),
-            r"Matched to the public/OpenTable overlap, clipped to \(\pm 100\) percentage points, scaled by the fixed clip bound, then lifted to 16 patches with population-share weights.",
-            r"Private-branch model input used by non-private and DP OpenTable runs.",
+            latex_escape(f"Matched daily release ({private_series_shape[0]} days); tensor {private_tensor_shape[0]}x{private_tensor_shape[1]}"),
+            r"Restricted to the matched overlap, clipped to \(\pm 100\) percentage points, scaled by the fixed clip bound, then lifted to 16 patches with population-share weights.",
+            r"Private-branch input for non-private and DP OpenTable runs.",
         ],
         [
             r"Population vector",
-            latex_escape(f"{pop_shape[0]} entries"),
-            r"Loaded as the 16-patch population vector used both for seed scaling and for OpenTable tensor lifting.",
-            r"Sets patch populations and weights the city-level OpenTable release into patch space.",
+            latex_escape(f"{pop_shape[0]} patch entries"),
+            r"Loaded as the 16-patch population vector for seed scaling and private-signal lifting.",
+            r"Sets patch populations and lifting weights.",
         ],
         [
             r"Contact matrix",
-            latex_escape(f"{contact_shape[0]}x{contact_shape[1]} numeric matrix"),
+            latex_escape(f"{contact_shape[0]}x{contact_shape[1]} matrix"),
             r"Row-normalized at load time after reading the US age-contact matrix.",
-            r"Metapopulation coupling matrix for the SEIRM simulator.",
+            r"Metapopulation coupling matrix for the simulator.",
         ],
     ]
     tex = format_table(
-        caption="NYC data contract and model-facing artifact summary",
+        caption="NYC data contract and model-facing artifacts",
         label="tab:data_contract",
-        colspec=r">{\raggedright\arraybackslash}p{0.24\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}p{0.28\textwidth}>{\raggedright\arraybackslash}X",
+        colspec=r">{\raggedright\arraybackslash}p{0.21\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}p{0.29\textwidth}>{\raggedright\arraybackslash}X",
         header=["Artifact", "Temporal resolution / shape", "Preprocessing / transformation", "Role in pipeline"],
         rows=rows,
-        size_cmd=r"\scriptsize",
+        size_cmd=r"\footnotesize",
     )
     return tex, [str(p.relative_to(ROOT)) for p in [master, train, fmap, opentable, private_series, private_meta, private_pt, pop, contact]], [
         "Public covariate schema is inferred from the committed public feature map and matched train artifact rather than restated in config.",
@@ -191,57 +189,46 @@ def table2() -> tuple[str, list[str], list[str]]:
     split_w0 = read_json(ROOT / "data/processed/online/split_info_2020-08-05_matched_ot_w0.json")
     split_w3 = read_json(ROOT / "data/processed/online/split_info_2020-08-05_matched_ot_w3.json")
     split_w7 = read_json(ROOT / "data/processed/online/split_info_2020-08-05_matched_ot_w7.json")
-    contract = (
-        f"{split_w7['window_days']}-day matched overlap; train {split_w7['train_start']} to {split_w7['train_end']}; "
-        f"test {split_w7['test_start']} to {split_w7['test_end']} ({split_w7['test_days']}d)"
-    )
     rows = [
         [
             r"Public-only baseline",
-            r"Public target history and public covariates; OpenTable branch disabled",
+            r"Public target history + public covariates",
             r"None",
             r"$w \in \{0,3,7\}$",
-            latex_escape(contract),
-            r"A arm of the matched A/B ladder; same dates as all OpenTable conditions.",
         ],
         [
             r"Non-private OpenTable",
-            r"Public daily covariates + matched non-private OpenTable tensor",
+            r"Public target history + public covariates + OpenTable tensor",
             r"None",
             r"$w \in \{0,3,7\}$",
-            latex_escape(contract),
-            r"B arm of the matched A/B ladder; contrasts directly with the public-only baseline.",
         ],
         [
             r"Event-level Gaussian DP OpenTable",
-            r"Public daily covariates + Gaussian-DP OpenTable tensor",
+            r"Public target history + public covariates + DP OpenTable tensor",
             r"Gaussian DP (event)",
-            r"$w=7$; $\epsilon \in \{1,2,4,8,16\}$",
-            latex_escape(contract),
-            r"Noise injected before patch lifting; same matched horizon and train/test cut as the non-private reference.",
+            r"$w=7$, $\epsilon \in \{1,2,4,8,16\}$",
         ],
         [
             r"Restaurant-level Gaussian DP OpenTable",
-            r"Public daily covariates + Gaussian-DP OpenTable tensor",
+            r"Public target history + public covariates + DP OpenTable tensor",
             r"Gaussian DP (restaurant)",
-            r"$w=7$; $\epsilon \in \{1,2,4,8,16\}$",
-            latex_escape(contract),
-            r"Same matched contract as above, with restaurant-level sensitivity and Gaussian calibration.",
+            r"$w=7$, $\epsilon \in \{1,2,4,8,16\}$",
         ],
     ]
     tex = format_table(
         caption="Experimental conditions and comparison ladder",
         label="tab:experimental_conditions",
-        colspec=r">{\raggedright\arraybackslash}p{0.17\textwidth}>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.14\textwidth}>{\raggedright\arraybackslash}p{0.14\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}X",
-        header=["Condition", "Inputs", "Privacy mode", "Smoothing window", "Horizon / evaluation contract", "Notes"],
+        colspec=r">{\raggedright\arraybackslash}p{0.25\textwidth}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{0.17\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}",
+        header=["Condition", "Inputs", "Privacy mode", "Setting"],
         rows=rows,
         notes=[
             latex_escape(
-                f"The matched-window contract is identical across w=0, 3, and 7 split metadata: joint window {split_w0['window_start']} to {split_w0['window_end']} (w=0), "
-                f"{split_w3['window_start']} to {split_w3['window_end']} (w=3), and {split_w7['window_start']} to {split_w7['window_end']} (w=7)."
+                f"All conditions use the same matched-window contract: matched window {split_w7['window_start']} to {split_w7['window_end']}; "
+                f"train {split_w7['train_start']} to {split_w7['train_end']}; test {split_w7['test_start']} to {split_w7['test_end']}; "
+                f"{split_w7['test_days']}-day forecast horizon."
             )
         ],
-        size_cmd=r"\scriptsize",
+        size_cmd=r"\footnotesize",
     )
     return tex, [
         "data/processed/online/split_info_2020-08-05_matched_ot_w0.json",
@@ -292,10 +279,10 @@ def table3() -> tuple[str, list[str], list[str]]:
     tex = format_table(
         caption="Final matched-window forecasting metrics",
         label="tab:final_metrics",
-        colspec=r">{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{0.06\textwidth}>{\raggedleft\arraybackslash}p{0.09\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}>{\raggedleft\arraybackslash}p{0.16\textwidth}",
+        colspec=r">{\raggedright\arraybackslash}X>{\centering\arraybackslash}p{0.06\textwidth}>{\centering\arraybackslash}p{0.08\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}",
         header=["Condition / run family", "$w$", r"$\epsilon$", "RMSE", "MAE", "MAPE"],
         rows=grouped_metric_rows(),
-        size_cmd=r"\scriptsize",
+        size_cmd=r"\footnotesize",
     )
     return tex, [f"outputs/nyc/2020-08-05/metrics_{run}.json" for run in ALL_RUNS] + ["outputs/nyc/2020-08-05/metrics_summary.csv"], []
 
@@ -303,55 +290,55 @@ def table3() -> tuple[str, list[str], list[str]]:
 def table4() -> tuple[str, list[str], list[str]]:
     rows = [
         [
-            r"ParameterNN (implemented as \texttt{CalibNNTwoEncoderThreeOutputs})",
-            r"Private tensor \([P,T,1]\), public features \([T,F]\), identity metadata, supervised lag context",
-            r"Weekly epi parameters \([W,7]\), seed vector \([P]\), beta matrix \([P,P]\)",
+            r"ParameterNN",
+            r"Private tensor, public features, lagged target context",
+            r"Weekly epi parameters, seed vector, beta matrix",
             r"Daily histories \(\rightarrow\) weekly parameters",
-            r"Maps matched public/private histories into simulator parameters and initial conditions.",
+            r"Maps matched histories into simulator parameters and initial conditions.",
         ],
         [
-            r"Metapopulation SEIRM simulator (\texttt{MetapopulationSEIRMBeta})",
+            r"Metapopulation SEIRM simulator",
             r"Weekly epi parameters, seed vector, beta matrix, population vector, contact matrix",
-            r"Daily patch infections aggregated to city-wide case predictions",
+            r"Daily city-level forecast",
             r"Daily",
-            r"Mechanistic backbone used to generate the base forecast trajectory.",
+            r"Mechanistic forecast backbone.",
         ],
         [
-            r"GRU residual adapter (\texttt{ErrorCorrectionAdapter})",
-            r"Base city-wide simulator prediction sequence",
-            r"Additive residual correction sequence",
+            r"GRU residual adapter",
+            r"Base simulator forecast sequence",
+            r"Residual correction sequence",
             r"Daily",
-            r"Learns a lightweight error-correction term on top of the mechanistic forecast.",
+            r"Learns an additive correction on top of the mechanistic forecast.",
         ],
         [
             r"Training stage 1 (\texttt{gradmeta})",
             r"ParameterNN + simulator; adapter frozen/off",
             r"Best parameter-network checkpoint",
             r"Full matched train window",
-            r"Optimizes simulator fit loss (RMSE on the smoothed train target in the thesis runs).",
+            r"Fits the mechanistic model to the smoothed training target.",
         ],
         [
             r"Training stage 2 (\texttt{adapter})",
             r"Frozen simulator outputs + adapter residual target",
             r"Best adapter checkpoint",
             r"Full matched train window",
-            r"Fits the residual adapter with MSE loss on the default smoothed residual target.",
+            r"Fits the residual adapter on the default smoothed residual target.",
         ],
         [
             r"Training stage 3 (\texttt{together})",
             r"ParameterNN + simulator + adapter jointly",
             r"Final joint checkpoints and evaluation artifacts",
             r"Full matched train window",
-            r"Jointly fine-tunes both modules with an annealed blend of simulator fit loss and adapter auxiliary loss.",
+            r"Jointly fine-tunes the mechanistic and residual components.",
         ],
     ]
     tex = format_table(
         caption="Forecasting modules and staged training protocol",
         label="tab:module_training",
-        colspec=r">{\raggedright\arraybackslash}p{0.19\textwidth}>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.20\textwidth}>{\raggedright\arraybackslash}p{0.12\textwidth}>{\raggedright\arraybackslash}X",
-        header=["Module", "Main inputs", "Main outputs", "Timescale", "Role"],
+        colspec=r">{\raggedright\arraybackslash}p{0.20\textwidth}>{\raggedright\arraybackslash}p{0.23\textwidth}>{\raggedright\arraybackslash}p{0.20\textwidth}>{\raggedright\arraybackslash}p{0.13\textwidth}>{\raggedright\arraybackslash}X",
+        header=["Module / stage", "Main inputs", "Main outputs", "Timescale", "Role"],
         rows=rows,
-        size_cmd=r"\scriptsize",
+        size_cmd=r"\footnotesize",
     )
     return tex, [
         "configs/nyc.json",
@@ -377,28 +364,31 @@ def table5() -> tuple[str, list[str], list[str]]:
     rows = [
         [r"Protected unit", r"One restaurant contribution on one day", r"One restaurant contribution across the full matched window"],
         [r"Release object", r"City-level OpenTable YoY seated-diner series", r"City-level OpenTable YoY seated-diner series"],
-        [r"Injection point", r"Gaussian noise added before patch lifting", r"Gaussian noise added before patch lifting"],
-        [r"Clip bound", metric_str(event["clipping_bound_pp"]) + r" percentage points", metric_str(restaurant["clipping_bound_pp"]) + r" percentage points"],
+        [r"Injection point", r"Gaussian noise added to the clipped city-level series before patch lifting", r"Gaussian noise added to the clipped city-level series before patch lifting"],
+        [r"Clip bound", latex_escape(str(int(event["clipping_bound_pp"]))) + r" percentage points", latex_escape(str(int(restaurant["clipping_bound_pp"]))) + r" percentage points"],
         [r"Post-clip", r"Yes; post-noise clip to \(\pm 100\) pp", r"Yes; post-noise clip to \(\pm 100\) pp"],
         [r"Scaling rule", r"Released YoY divided by fixed \texttt{clipping\_bound\_pp}", r"Released YoY divided by fixed \texttt{clipping\_bound\_pp}"],
         [r"$K$", latex_escape(str(event["K"])), latex_escape(str(restaurant["K"]))],
         [r"Epsilon grid", r"$\{1,2,4,8,16\}$", r"$\{1,2,4,8,16\}$"],
         [r"Delta", metric_str(event["delta"]), metric_str(restaurant["delta"])],
         [r"Sensitivity form", r"$\Delta_2 = 0.25$ pp", r"$\Delta_2 = 0.25\sqrt{159}$ pp"],
-        [r"Noise calibration summary", sigma_grid("event"), sigma_grid("restaurant")],
+        [r"Noise calibration", r"$\sigma = \Delta_2\,c(\delta)/\epsilon$", r"$\sigma = \Delta_2\,c(\delta)/\epsilon$"],
     ]
     tex = format_table(
-        caption="Differential privacy calibration and implementation summary",
+        caption="Differential privacy calibration and implementation",
         label="tab:dp_calibration",
-        colspec=r">{\raggedright\arraybackslash}p{0.21\textwidth}>{\raggedright\arraybackslash}p{0.34\textwidth}>{\raggedright\arraybackslash}X",
+        colspec=r">{\raggedright\arraybackslash}p{0.20\textwidth}>{\raggedright\arraybackslash}p{0.33\textwidth}>{\raggedright\arraybackslash}X",
         header=["Item", "Event-level DP", "Restaurant-level DP"],
         rows=rows,
         notes=[
             latex_escape(
-                "The committed builder clips the city-level YoY series, adds Gaussian noise at the city level, applies a public post-noise clip, rescales by the fixed clip bound, and only then lifts to the 16-patch tensor with population-share weights."
-            )
+                "Implementation sequence: city-level OpenTable YoY series -> clip -> Gaussian noise -> post-clip -> fixed scaling -> patch lifting."
+            ),
+            r"$c(\delta)=\sqrt{2\log(1.25/\delta)}$ with $\delta=0.0001$.",
+            "Event-level sigma values by epsilon: " + sigma_grid("event"),
+            "Restaurant-level sigma values by epsilon: " + sigma_grid("restaurant"),
         ],
-        size_cmd=r"\scriptsize",
+        size_cmd=r"\footnotesize",
     )
     return tex, [
         "scripts/build_private_opentable_tensor.py",
@@ -409,60 +399,60 @@ def table5() -> tuple[str, list[str], list[str]]:
 def pattern_status(pattern: str) -> tuple[str, list[Path]]:
     if "{" not in pattern:
         path = ROOT / pattern
-        return ("present" if path.exists() else "missing", [path] if path.exists() else [])
+        return ("Primary record" if path.exists() else "Missing", [path] if path.exists() else [])
     if pattern == "data/processed/online/split_info_2020-08-05_matched_ot_w{0,3,7}.json":
         paths = [ROOT / f"data/processed/online/split_info_2020-08-05_matched_ot_w{w}.json" for w in (0, 3, 7)]
-        return (f"{sum(p.exists() for p in paths)}/3 present", paths)
+        return ("Matched split records", paths)
     if pattern == "data/processed/private/opentable_private_observed_dp_gaussian_{event|restaurant}_eps{1,2,4,8,16}_2020-08-05_matched_ot_series.csv":
         paths = sorted((ROOT / "data/processed/private").glob("opentable_private_observed_dp_gaussian_*_2020-08-05_matched_ot_series.csv"))
-        return (f"{len(paths)}/10 present", paths)
+        return ("DP release family", paths)
     raise ValueError(f"Unhandled pattern: {pattern}")
 
 
 def table_a1() -> tuple[str, list[str], list[str]]:
     rows = []
     artifacts = [
-        ("configs/nyc.json", "Experiment configuration and path contract", "Tables 2, 4, and 5", None),
-        ("scripts/build_data.sh", "Public-data build entrypoint", "Table 1 and Appendix A1", None),
-        ("data/processed/nyc_master_daily.csv", "Canonical public daily panel", "Tables 1 and 2", None),
-        ("data/processed/opentable_yoy_daily.csv", "Processed city-level OpenTable signal", "Tables 1, 2, and 5", None),
-        ("scripts/prepare_online_nyc.py and data/processed/online/*", "Matched-window public train/test artifacts and feature maps", "Tables 1 and 2", "Committed script plus matched-window artifact directory present."),
-        ("data/processed/online/split_info_2020-08-05_matched_ot_w{0,3,7}.json", "Matched-window evaluation contract", "Table 2", None),
-        ("scripts/build_private_opentable_tensor.py", "DP and non-private OpenTable tensor builder", "Tables 1 and 5", None),
-        ("data/processed/private/opentable_private_observed_2020-08-05_matched_ot_series.csv", "Non-private released OpenTable series", "Tables 1 and 5", None),
-        ("data/processed/private/opentable_private_observed_dp_gaussian_{event|restaurant}_eps{1,2,4,8,16}_2020-08-05_matched_ot_series.csv", "Committed DP released series for the epsilon sweep", "Tables 3 and 5", None),
-        ("scripts/run_matched_ab_grid.sh", "Non-private comparison launcher", "Table 2 and Section 6 reproduction", None),
-        ("scripts/run_matched_dp_grid_w7.sh", "Matched DP sweep launcher", "Tables 2, 3, and 5", None),
-        ("outputs/nyc/2020-08-05/metrics_<run_tag>.json", "Authoritative per-run metrics and DP metadata", "Tables 3 and 5", "16 thesis-facing run records present; 1 additional smoketest artifact present."),
-        ("outputs/nyc/2020-08-05/fit_train_test_<run_tag>.csv", "Per-run fitted and held-out trajectories", "Appendix reproducibility audit", "16 thesis-facing trajectory files present; 1 additional smoketest file present."),
-        ("outputs/nyc/2020-08-05/metrics_summary.csv", "Convenience aggregate summary", "Cross-check only; not source of truth for Table 3", None),
-        ("scripts/plot_matched_dp_summary.py and outputs/nyc/2020-08-05/rmse_vs_epsilon_*.png", "DP summary plotting script and committed outputs", "Appendix reproducibility audit", "Plotting script present with committed RMSE-vs-epsilon figures."),
+        ("configs/nyc.json", "Experiment configuration and path contract", "Tables 2, 4, and 5", "Primary configuration record"),
+        ("scripts/build_data.sh", "Public-data build entrypoint", "Table 1 and Appendix A1", "Canonical public-data wrapper"),
+        ("data/processed/nyc_master_daily.csv", "Canonical public daily panel", "Tables 1 and 2", "Master public data table"),
+        ("data/processed/opentable_yoy_daily.csv", "Processed city-level OpenTable signal", "Tables 1, 2, and 5", "Canonical OpenTable series"),
+        ("scripts/prepare_online_nyc.py and data/processed/online/*", "Matched-window public train/test artifacts and feature maps", "Tables 1 and 2", "Primary matched-window preparation record"),
+        ("data/processed/online/split_info_2020-08-05_matched_ot_w{0,3,7}.json", "Matched-window evaluation contract", "Table 2", "Matched-window split records"),
+        ("scripts/build_private_opentable_tensor.py", "DP and non-private OpenTable tensor builder", "Tables 1 and 5", "Canonical private-signal builder"),
+        ("data/processed/private/opentable_private_observed_2020-08-05_matched_ot_series.csv", "Non-private released OpenTable series", "Tables 1 and 5", "Non-private release record"),
+        ("data/processed/private/opentable_private_observed_dp_gaussian_{event|restaurant}_eps{1,2,4,8,16}_2020-08-05_matched_ot_series.csv", "DP released series across privacy settings", "Tables 3 and 5", "DP release family"),
+        ("scripts/run_matched_ab_grid.sh", "Non-private comparison launcher", "Table 2 and Section 6 reproduction", "Canonical experiment wrapper"),
+        ("scripts/run_matched_dp_grid_w7.sh", "Matched DP sweep launcher", "Tables 2, 3, and 5", "Canonical DP experiment wrapper"),
+        ("outputs/nyc/2020-08-05/metrics_<run_tag>.json", "Per-run metrics and DP metadata", "Tables 3 and 5", "Authoritative per-run results record"),
+        ("outputs/nyc/2020-08-05/fit_train_test_<run_tag>.csv", "Per-run fitted and held-out trajectories", "Appendix reproducibility audit", "Per-run trajectory record"),
+        ("outputs/nyc/2020-08-05/metrics_summary.csv", "Aggregate metrics summary", "Cross-check only", "Convenience summary only"),
+        ("scripts/plot_matched_dp_summary.py and outputs/nyc/2020-08-05/rmse_vs_epsilon_*.png", "Privacy-utility summary plotting", "Appendix reproducibility audit", "Summary plotting record"),
     ]
     used_sources: list[str] = []
     for pattern, why, use_in_thesis, status_note in artifacts:
         if pattern == "scripts/prepare_online_nyc.py and data/processed/online/*":
             script = ROOT / "scripts/prepare_online_nyc.py"
             online_paths = sorted((ROOT / "data/processed/online").glob("*"))
-            status = "present"
+            status = "Primary preparation script and artifact family"
             used_sources.extend([str(script.relative_to(ROOT))] + [str(p.relative_to(ROOT)) for p in online_paths])
         elif pattern == "outputs/nyc/2020-08-05/metrics_<run_tag>.json":
             paths = sorted((ROOT / "outputs/nyc/2020-08-05").glob("metrics_*.json"))
-            status = "present"
+            status = "Authoritative run-level metrics family"
             used_sources.extend([str(p.relative_to(ROOT)) for p in paths])
         elif pattern == "outputs/nyc/2020-08-05/fit_train_test_<run_tag>.csv":
             paths = sorted((ROOT / "outputs/nyc/2020-08-05").glob("fit_train_test_*.csv"))
-            status = "present"
+            status = "Run-level trajectory family"
             used_sources.extend([str(p.relative_to(ROOT)) for p in paths])
         elif pattern == "scripts/plot_matched_dp_summary.py and outputs/nyc/2020-08-05/rmse_vs_epsilon_*.png":
             script = ROOT / "scripts/plot_matched_dp_summary.py"
             plots = sorted((ROOT / "outputs/nyc/2020-08-05").glob("rmse_vs_epsilon_*.png"))
-            status = "present"
+            status = "Summary plotting script and figure family"
             used_sources.extend([str(script.relative_to(ROOT))] + [str(p.relative_to(ROOT)) for p in plots])
         else:
             status, paths = pattern_status(pattern)
             used_sources.extend([str(p.relative_to(ROOT)) for p in paths if p.exists()])
 
-        note = status if status_note is None else f"{status}; {status_note}"
+        note = status if status_note is None else status_note
         rows.append(
             [
                 latex_escape(pattern),
@@ -474,11 +464,11 @@ def table_a1() -> tuple[str, list[str], list[str]]:
 
     tex = format_table(
         caption="Reproducibility artifact checklist",
-        label="tab:artifact_checklist",
-        colspec=r">{\raggedright\arraybackslash}p{0.30\textwidth}>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}X",
+        label="tab:reproducibility_checklist",
+        colspec=r">{\raggedright\arraybackslash}p{0.28\textwidth}>{\raggedright\arraybackslash}p{0.24\textwidth}>{\raggedright\arraybackslash}p{0.17\textwidth}>{\raggedright\arraybackslash}X",
         header=["Artifact / pattern", "Why it matters", "Use in thesis", "Status note"],
         rows=rows,
-        size_cmd=r"\scriptsize",
+        size_cmd=r"\footnotesize",
     )
     return tex, sorted(set(used_sources)), [
         "Pattern rows are compacted into presence counts so the appendix table stays thesis-readable.",

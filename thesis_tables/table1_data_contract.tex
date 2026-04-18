@@ -1,19 +1,19 @@
-\begin{table}[t]
+\begin{table}[!htbp]
 \centering
-\scriptsize
+\footnotesize
 \begin{threeparttable}
-\caption{NYC data contract and model-facing artifact summary}
+\caption{NYC data contract and model-facing artifacts}
 \label{tab:data_contract}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.24\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}p{0.28\textwidth}>{\raggedright\arraybackslash}X}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.21\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}p{0.29\textwidth}>{\raggedright\arraybackslash}X}
 \toprule
 Artifact & Temporal resolution / shape & Preprocessing / transformation & Role in pipeline \\
 \midrule
-Public target / master daily table & daily; 960x13 & Merges cases, deaths, hospitalizations, mobility, and trend signals into one contiguous daily panel; OpenTable kept separate. & Canonical public source table; supplies the case target and upstream public feature columns. \\
-Public covariates (\texttt{train/test\_*} + \texttt{public\_feature\_map\_*}) & daily matched train matrix; 131 rows, 10 mapped public covariates & Numeric public columns are selected from the master table after excluding date and target fields, then renamed pub\_0..pub\_9; the train artifact also carries date and target-history fields. & Public encoder input; schema confirmed by feature map: probable\_cases, hospitalizations, deaths, mob\_retail, mob\_grocery, mob\_parks, mob\_transit, mob\_work, mob\_residential, trend\_covid\_topic. \\
-OpenTable city-level YoY signal & daily city series; 170x2 & Processed to a single observed YoY seated-diner series (\texttt{yoy\_seated\_diner}) before matched-window restriction. & Authoritative city-level private-source input before clipping, scaling, and patch lifting. \\
-Patch-aligned OpenTable tensor / private branch representation & series csv=159x6; tensor=16x159 & Matched to the public/OpenTable overlap, clipped to \(\pm 100\) percentage points, scaled by the fixed clip bound, then lifted to 16 patches with population-share weights. & Private-branch model input used by non-private and DP OpenTable runs. \\
-Population vector & 16 entries & Loaded as the 16-patch population vector used both for seed scaling and for OpenTable tensor lifting. & Sets patch populations and weights the city-level OpenTable release into patch space. \\
-Contact matrix & 16x16 numeric matrix & Row-normalized at load time after reading the US age-contact matrix. & Metapopulation coupling matrix for the SEIRM simulator. \\
+Public target / master daily table & Daily panel (960 rows, 13 columns) & Integrates cases, hospitalizations, deaths, mobility, and trend signals in one contiguous public daily table. & Supplies the case target and the source columns for public features. \\
+Public covariates & Daily matched design; 10 mapped covariates over 131 train days & Numeric public predictors are selected from the master table, excluding date and target fields, then mapped to pub\_0..pub\_9. & Public encoder input; feature map resolves the covariate set: probable\_cases, hospitalizations, deaths, mob\_retail, mob\_grocery, mob\_parks, mob\_transit, mob\_work, mob\_residential, trend\_covid\_topic. \\
+OpenTable city-level YoY signal & Daily city series (170 rows) & Reduced to the observed \texttt{yoy\_seated\_diner} series before matched-window restriction. & City-level private-source signal before clipping, scaling, and patch lifting. \\
+Patch-aligned OpenTable tensor / private branch representation & Matched daily release (159 days); tensor 16x159 & Restricted to the matched overlap, clipped to \(\pm 100\) percentage points, scaled by the fixed clip bound, then lifted to 16 patches with population-share weights. & Private-branch input for non-private and DP OpenTable runs. \\
+Population vector & 16 patch entries & Loaded as the 16-patch population vector for seed scaling and private-signal lifting. & Sets patch populations and lifting weights. \\
+Contact matrix & 16x16 matrix & Row-normalized at load time after reading the US age-contact matrix. & Metapopulation coupling matrix for the simulator. \\
 \bottomrule
 \end{tabularx}
 \end{threeparttable}

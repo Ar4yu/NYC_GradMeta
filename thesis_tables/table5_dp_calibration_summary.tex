@@ -1,29 +1,32 @@
-\begin{table}[t]
+\begin{table}[!htbp]
 \centering
-\scriptsize
+\footnotesize
 \begin{threeparttable}
-\caption{Differential privacy calibration and implementation summary}
+\caption{Differential privacy calibration and implementation}
 \label{tab:dp_calibration}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.21\textwidth}>{\raggedright\arraybackslash}p{0.34\textwidth}>{\raggedright\arraybackslash}X}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.20\textwidth}>{\raggedright\arraybackslash}p{0.33\textwidth}>{\raggedright\arraybackslash}X}
 \toprule
 Item & Event-level DP & Restaurant-level DP \\
 \midrule
 Protected unit & One restaurant contribution on one day & One restaurant contribution across the full matched window \\
 Release object & City-level OpenTable YoY seated-diner series & City-level OpenTable YoY seated-diner series \\
-Injection point & Gaussian noise added before patch lifting & Gaussian noise added before patch lifting \\
-Clip bound & 100.0 percentage points & 100.0 percentage points \\
+Injection point & Gaussian noise added to the clipped city-level series before patch lifting & Gaussian noise added to the clipped city-level series before patch lifting \\
+Clip bound & 100 percentage points & 100 percentage points \\
 Post-clip & Yes; post-noise clip to \(\pm 100\) pp & Yes; post-noise clip to \(\pm 100\) pp \\
 Scaling rule & Released YoY divided by fixed \texttt{clipping\_bound\_pp} & Released YoY divided by fixed \texttt{clipping\_bound\_pp} \\
 $K$ & 159 & 159 \\
 Epsilon grid & $\{1,2,4,8,16\}$ & $\{1,2,4,8,16\}$ \\
 Delta & 0.0001 & 0.0001 \\
 Sensitivity form & $\Delta_2 = 0.25$ pp & $\Delta_2 = 0.25\sqrt{159}$ pp \\
-Noise calibration summary & $\epsilon=1$: 1.0859030759746926; $\epsilon=2$: 0.5429515379873463; $\epsilon=4$: 0.27147576899367315; $\epsilon=8$: 0.13573788449683657; $\epsilon=16$: 0.06786894224841829 & $\epsilon=1$: 13.69271678577325; $\epsilon=2$: 6.846358392886625; $\epsilon=4$: 3.4231791964433125; $\epsilon=8$: 1.7115895982216562; $\epsilon=16$: 0.8557947991108281 \\
+Noise calibration & $\sigma = \Delta_2\,c(\delta)/\epsilon$ & $\sigma = \Delta_2\,c(\delta)/\epsilon$ \\
 \bottomrule
 \end{tabularx}
 \begin{tablenotes}[flushleft]
 \footnotesize
-\item The committed builder clips the city-level YoY series, adds Gaussian noise at the city level, applies a public post-noise clip, rescales by the fixed clip bound, and only then lifts to the 16-patch tensor with population-share weights.
+\item Implementation sequence: city-level OpenTable YoY series -> clip -> Gaussian noise -> post-clip -> fixed scaling -> patch lifting.
+\item $c(\delta)=\sqrt{2\log(1.25/\delta)}$ with $\delta=0.0001$.
+\item Event-level sigma values by epsilon: $\epsilon=1$: 1.0859; $\epsilon=2$: 0.5430; $\epsilon=4$: 0.2715; $\epsilon=8$: 0.1357; $\epsilon=16$: 0.0679
+\item Restaurant-level sigma values by epsilon: $\epsilon=1$: 13.6927; $\epsilon=2$: 6.8464; $\epsilon=4$: 3.4232; $\epsilon=8$: 1.7116; $\epsilon=16$: 0.8558
 \end{tablenotes}
 \end{threeparttable}
 \end{table}
