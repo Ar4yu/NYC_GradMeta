@@ -1,0 +1,34 @@
+\begin{table}[!htbp]
+\centering
+\footnotesize
+\begin{threeparttable}
+\caption{Five-seed matched-window privacy-utility summary}
+\label{tab:multiseed_privacy_metrics}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\centering\arraybackslash}p{0.08\textwidth}>{\centering\arraybackslash}p{0.08\textwidth}>{\raggedleft\arraybackslash}p{0.17\textwidth}>{\raggedleft\arraybackslash}p{0.17\textwidth}}
+\toprule
+Condition / run family & $\epsilon$ & Seeds & RMSE mean $\pm$ std & MAE mean $\pm$ std \\
+\midrule
+\multicolumn{5}{l}{\textit{Matched non-private baselines}} \\
+Public-only baseline & \textemdash & 5 & 97.4750 $\pm$ 30.9784 & 86.0428 $\pm$ 32.0532 \\
+Non-private OpenTable baseline & \textemdash & 5 & 102.1172 $\pm$ 37.1422 & 89.0324 $\pm$ 38.6921 \\
+\multicolumn{5}{l}{\textit{Event-level Gaussian DP}} \\
+Event-DP OpenTable & 1 & 5 & 116.1323 $\pm$ 29.3147 & 105.7451 $\pm$ 32.0025 \\
+Event-DP OpenTable & 2 & 5 & 131.6222 $\pm$ 35.9979 & 118.5527 $\pm$ 39.6451 \\
+Event-DP OpenTable & 4 & 5 & 113.3571 $\pm$ 56.6427 & 105.0592 $\pm$ 56.1333 \\
+Event-DP OpenTable & 8 & 5 & 80.3474 $\pm$ 28.5684 & 69.4612 $\pm$ 26.5669 \\
+Event-DP OpenTable & 16 & 5 & 98.5112 $\pm$ 28.0241 & 86.2850 $\pm$ 26.4978 \\
+\multicolumn{5}{l}{\textit{Restaurant-level Gaussian DP}} \\
+Restaurant-DP OpenTable & 1 & 5 & 71.2458 $\pm$ 53.1108 & 63.8489 $\pm$ 52.5761 \\
+Restaurant-DP OpenTable & 2 & 5 & 115.8324 $\pm$ 56.3662 & 107.1657 $\pm$ 57.8645 \\
+Restaurant-DP OpenTable & 4 & 5 & 74.1755 $\pm$ 25.2970 & 63.5968 $\pm$ 22.7223 \\
+Restaurant-DP OpenTable & 8 & 5 & 71.0782 $\pm$ 22.4257 & 57.3722 $\pm$ 15.5806 \\
+Restaurant-DP OpenTable & 16 & 5 & 77.9672 $\pm$ 45.6430 & 69.5337 $\pm$ 45.0548 \\
+\bottomrule
+\end{tabularx}
+\begin{tablenotes}[flushleft]
+\footnotesize
+\item Built from the aggregated five-seed run group at outputs/nyc/2020-08-05/run\_groups/dp\_multiseed\_20260417\_223607.
+\item All rows use the same matched-window contract and the same long-train thesis-facing DP sweep at $w=7$.
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

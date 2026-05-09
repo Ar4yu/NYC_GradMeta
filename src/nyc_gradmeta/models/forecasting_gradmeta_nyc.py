@@ -512,7 +512,16 @@ def main():
         default=None,
         help="Optional explicit run_tag override used for saved artifacts and checkpoints.",
     )
+    ap.add_argument(
+        "--output_dir",
+        default=None,
+        help="Optional directory for run artifacts. Defaults to outputs/nyc/<ASOF>.",
+    )
     args = ap.parse_args()
+    if not (0.0 <= float(args.val_split) < 1.0):
+        raise ValueError(f"--val_split must be in [0, 1), got {args.val_split}.")
+    if int(args.patience) < 1:
+        raise ValueError(f"--patience must be >= 1, got {args.patience}.")
 
     cfg = load_config(args.config)
     nyc = cfg["nyc"]
@@ -587,7 +596,7 @@ def main():
     private_pt = private_dir / (
         f"{private_artifact_stem(args.asof, matched_window_with_opentable=args.matched_window_with_opentable, privacy_mode=args.privacy_mode, mechanism=args.mechanism, epsilon=args.epsilon)}.pt"
     )
-    out_dir = Path("outputs") / "nyc" / args.asof
+    out_dir = Path(args.output_dir) if args.output_dir else Path("outputs") / "nyc" / args.asof
     out_dir.mkdir(parents=True, exist_ok=True)
 
     train_dataset = SeqDataset(str(train_csv), target_name)
@@ -759,16 +768,17 @@ def main():
         private_norm=private_norm,
     )
 
-    val_len = min(28, max(0, int(training_num_steps_full * args.val_split)))
+    raw_val_len = min(28, max(0, int(training_num_steps_full * args.val_split)))
+    use_val = raw_val_len > 0 and not args.no_early_stop
+    val_len = raw_val_len if use_val else 0
     train_len = max(1, training_num_steps_full - val_len)
-    use_val = val_len > 0 and not args.no_early_stop
 
     X_train_full = X_train
     y_train_target_full = y_train_target_tensor
     y_train_raw_full = y_train_raw_tensor
     private_full_tensor = private_train
 
-    if val_len > 0:
+    if use_val:
         X_train = X_train_full[:train_len]
         y_train = y_train_target_full[:train_len]
         y_train_raw = y_train_raw_full[:train_len]
@@ -801,12 +811,27 @@ def main():
             f"[info] Using test horizon from test CSV: {test_horizon} days "
             f"(config days_head={days_head})."
         )
-    total_num_steps = training_num_steps + test_horizon
+    total_num_steps = training_num_steps_full + test_horizon
 
     mse = nn.MSELoss()
     best_loss_gradmeta = float("inf")
     best_loss_adapter = float("inf")
     best_loss_together = float("inf")
+    best_val_loss_gradmeta = float("inf")
+    best_val_loss_adapter = float("inf")
+    best_val_loss_together = float("inf")
+    best_epoch_gradmeta: int | None = None
+    best_epoch_adapter: int | None = None
+    best_epoch_together: int | None = None
+    epochs_completed_gradmeta = 0
+    epochs_completed_adapter = 0
+    epochs_completed_together = 0
+    stopped_early_gradmeta = False
+    stopped_early_adapter = False
+    stopped_early_together = False
+    early_stop_wait_gradmeta = 0
+    early_stop_wait_adapter = 0
+    early_stop_wait_together = 0
 
     def _warn_blow_up(preds: torch.Tensor, stage_name: str) -> bool:
         if not detect_blow_up(preds):
@@ -817,6 +842,105 @@ def main():
         )
         return True
 
+    def _selection_loss(train_loss: torch.Tensor, val_loss: torch.Tensor | None) -> float:
+        chosen = val_loss if use_val and val_loss is not None else train_loss
+        return float(chosen.detach().cpu().item())
+
+    def _eval_gradmeta_loss(public_X: torch.Tensor, public_y: torch.Tensor, private_data: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            param_model.eval()
+            params_epi_weekly, seed_status, adjustment_matrix = param_model_forward(
+                param_model=param_model,
+                private_data=private_data,
+                public_X=public_X,
+                public_y=public_y,
+                device=device,
+            )
+            assert_model_outputs(params_epi_weekly, seed_status, adjustment_matrix, num_patch)
+            preds = forward_simulator(
+                abm=abm,
+                params_epi_weekly=params_epi_weekly,
+                seed_status=seed_status,
+                adjustment_matrix=adjustment_matrix,
+                num_steps=int(public_X.shape[0]),
+                enforce_constraints=enforce_constraints,
+                param_mins=param_mins,
+                param_maxs=param_maxs,
+            )
+            if _warn_blow_up(preds, "Stage1-GradMeta/val"):
+                return torch.tensor(float("inf"), device=device)
+            return torch.sqrt(mse(preds, public_y))
+
+    def _eval_adapter_loss(public_X: torch.Tensor, public_y: torch.Tensor, public_y_raw: torch.Tensor, private_data: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            param_model.eval()
+            error_adapter.eval()
+            params_epi_weekly, seed_status, adjustment_matrix = param_model_forward(
+                param_model=param_model,
+                private_data=private_data,
+                public_X=public_X,
+                public_y=public_y,
+                device=device,
+            )
+            assert_model_outputs(params_epi_weekly, seed_status, adjustment_matrix, num_patch)
+            base_preds = forward_simulator(
+                abm=abm,
+                params_epi_weekly=params_epi_weekly,
+                seed_status=seed_status,
+                adjustment_matrix=adjustment_matrix,
+                num_steps=int(public_X.shape[0]),
+                enforce_constraints=enforce_constraints,
+                param_mins=param_mins,
+                param_maxs=param_maxs,
+            )
+            if _warn_blow_up(base_preds, "Stage2-Adapter/val"):
+                return torch.tensor(float("inf"), device=device)
+            residual_pred = error_adapter(base_preds)
+            residual_target = public_y_raw - base_preds if args.adapter_target == "raw" else public_y - base_preds
+            if args.adapter_loss == "rmse":
+                return torch.sqrt(mse(residual_pred, residual_target))
+            return mse(residual_pred, residual_target)
+
+    def _eval_together_loss(
+        public_X: torch.Tensor,
+        public_y: torch.Tensor,
+        public_y_raw: torch.Tensor,
+        private_data: torch.Tensor,
+        alpha: float,
+    ) -> torch.Tensor:
+        with torch.no_grad():
+            param_model.eval()
+            error_adapter.eval()
+            params_epi_weekly, seed_status, adjustment_matrix = param_model_forward(
+                param_model=param_model,
+                private_data=private_data,
+                public_X=public_X,
+                public_y=public_y,
+                device=device,
+            )
+            assert_model_outputs(params_epi_weekly, seed_status, adjustment_matrix, num_patch)
+            base_preds = forward_simulator(
+                abm=abm,
+                params_epi_weekly=params_epi_weekly,
+                seed_status=seed_status,
+                adjustment_matrix=adjustment_matrix,
+                num_steps=int(public_X.shape[0]),
+                enforce_constraints=enforce_constraints,
+                param_mins=param_mins,
+                param_maxs=param_maxs,
+            )
+            residual_pred = error_adapter(base_preds)
+            preds = base_preds + residual_pred
+            if _warn_blow_up(preds, "Stage3-Together/val"):
+                return torch.tensor(float("inf"), device=device)
+            fit_loss = torch.sqrt(mse(preds, public_y))
+            residual_target = public_y_raw - base_preds if args.adapter_target == "raw" else public_y - base_preds
+            if args.adapter_loss == "rmse":
+                aux_loss = torch.sqrt(mse(residual_pred, residual_target))
+            else:
+                aux_loss = mse(residual_pred, residual_target)
+            return (1.0 - alpha) * fit_loss + alpha * aux_loss
+
     if "gradmeta" in stages_to_run and epochs_gradmeta > 0:
         set_requires_grad(param_model, True)
         if error_adapter is not None:
@@ -824,7 +948,7 @@ def main():
         opt_gradmeta = torch.optim.Adam(param_model.parameters(), lr=lr, weight_decay=weight_decay)
         pbar = tqdm(range(epochs_gradmeta), desc="Stage1-GradMeta", unit="epoch")
 
-        for _ in pbar:
+        for epoch in pbar:
             param_model.train()
             params_epi_weekly, seed_status, adjustment_matrix = param_model_forward(
                 param_model=param_model,
@@ -855,11 +979,31 @@ def main():
                 torch.nn.utils.clip_grad_norm_(list(param_model.parameters()), args.clip_norm)
             opt_gradmeta.step()
 
-            loss_val = float(loss.detach().cpu().item())
-            if loss_val < best_loss_gradmeta:
-                best_loss_gradmeta = loss_val
+            val_loss = _eval_gradmeta_loss(X_val, y_val, private_val) if use_val else None
+            selection_loss = _selection_loss(loss, val_loss)
+            epochs_completed_gradmeta = epoch + 1
+            if selection_loss < best_loss_gradmeta:
+                best_loss_gradmeta = selection_loss
+                if val_loss is not None:
+                    best_val_loss_gradmeta = float(val_loss.detach().cpu().item())
+                best_epoch_gradmeta = epoch + 1
+                early_stop_wait_gradmeta = 0
                 torch.save(param_model.state_dict(), param_ckpt_path)
-            pbar.set_postfix_str(f"RMSE={best_loss_gradmeta:.4f}")
+            elif use_val:
+                early_stop_wait_gradmeta += 1
+
+            postfix = f"train={float(loss.detach().cpu().item()):.4f}"
+            if val_loss is not None:
+                postfix += f", val={float(val_loss.detach().cpu().item()):.4f}"
+            postfix += f", best={best_loss_gradmeta:.4f}"
+            pbar.set_postfix_str(postfix)
+            if use_val and early_stop_wait_gradmeta >= args.patience:
+                stopped_early_gradmeta = (epoch + 1) < epochs_gradmeta
+                print(
+                    f"[info] Early stopping Stage1-GradMeta at epoch {epoch + 1} "
+                    f"(best epoch={best_epoch_gradmeta}, patience={args.patience})."
+                )
+                break
 
     if error_adapter is not None and "adapter" in stages_to_run and epochs_adapter > 0:
         if param_ckpt_path.exists():
@@ -875,7 +1019,7 @@ def main():
         opt_adapter = torch.optim.Adam(error_adapter.parameters(), lr=adapter_lr, weight_decay=weight_decay)
         pbar = tqdm(range(epochs_adapter), desc="Stage2-Adapter", unit="epoch")
 
-        for _ in pbar:
+        for epoch in pbar:
             error_adapter.train()
             with torch.no_grad():
                 params_epi_weekly, seed_status, adjustment_matrix = param_model_forward(
@@ -923,11 +1067,31 @@ def main():
                 torch.nn.utils.clip_grad_norm_(list(error_adapter.parameters()), args.clip_norm)
             opt_adapter.step()
 
-            loss_val = float(loss.detach().cpu().item())
-            if loss_val < best_loss_adapter:
-                best_loss_adapter = loss_val
+            val_loss = _eval_adapter_loss(X_val, y_val, y_val_raw, private_val) if use_val else None
+            selection_loss = _selection_loss(loss, val_loss)
+            epochs_completed_adapter = epoch + 1
+            if selection_loss < best_loss_adapter:
+                best_loss_adapter = selection_loss
+                if val_loss is not None:
+                    best_val_loss_adapter = float(val_loss.detach().cpu().item())
+                best_epoch_adapter = epoch + 1
+                early_stop_wait_adapter = 0
                 torch.save(error_adapter.state_dict(), adapter_ckpt_path)
-            pbar.set_postfix_str(f"loss={best_loss_adapter:.4f}")
+            elif use_val:
+                early_stop_wait_adapter += 1
+
+            postfix = f"train={float(loss.detach().cpu().item()):.4f}"
+            if val_loss is not None:
+                postfix += f", val={float(val_loss.detach().cpu().item()):.4f}"
+            postfix += f", best={best_loss_adapter:.4f}"
+            pbar.set_postfix_str(postfix)
+            if use_val and early_stop_wait_adapter >= args.patience:
+                stopped_early_adapter = (epoch + 1) < epochs_adapter
+                print(
+                    f"[info] Early stopping Stage2-Adapter at epoch {epoch + 1} "
+                    f"(best epoch={best_epoch_adapter}, patience={args.patience})."
+                )
+                break
 
         set_requires_grad(param_model, True)
 
@@ -1004,12 +1168,32 @@ def main():
                 )
             opt_together.step()
 
-            loss_val = float(loss.detach().cpu().item())
-            if loss_val < best_loss_together:
-                best_loss_together = loss_val
+            val_loss = _eval_together_loss(X_val, y_val, y_val_raw, private_val, alpha) if use_val else None
+            selection_loss = _selection_loss(loss, val_loss)
+            epochs_completed_together = epoch + 1
+            if selection_loss < best_loss_together:
+                best_loss_together = selection_loss
+                if val_loss is not None:
+                    best_val_loss_together = float(val_loss.detach().cpu().item())
+                best_epoch_together = epoch + 1
+                early_stop_wait_together = 0
                 torch.save(param_model.state_dict(), param_ckpt_path)
                 torch.save(error_adapter.state_dict(), adapter_ckpt_path)
-            pbar.set_postfix_str(f"loss={best_loss_together:.4f}")
+            elif use_val:
+                early_stop_wait_together += 1
+
+            postfix = f"train={float(loss.detach().cpu().item()):.4f}"
+            if val_loss is not None:
+                postfix += f", val={float(val_loss.detach().cpu().item()):.4f}"
+            postfix += f", best={best_loss_together:.4f}"
+            pbar.set_postfix_str(postfix)
+            if use_val and early_stop_wait_together >= args.patience:
+                stopped_early_together = (epoch + 1) < epochs_together
+                print(
+                    f"[info] Early stopping Stage3-Together at epoch {epoch + 1} "
+                    f"(best epoch={best_epoch_together}, patience={args.patience})."
+                )
+                break
 
     if args.use_adapter and error_adapter is None:
         print("[info] Adapter requested but unavailable; skipping adapter stages.")
@@ -1051,7 +1235,7 @@ def main():
         forecast = preds_total[-test_horizon:].detach().cpu().numpy()
 
     preds_total_np = preds_total.detach().cpu().numpy().astype(np.float64)
-    y_train_used_np = y_train_target_np[:training_num_steps]
+    y_train_used_np = y_train_target_np[:training_num_steps_full]
     y_true_full = np.concatenate([y_train_used_np, y_test_np], axis=0)
     if len(y_true_full) != len(preds_total_np):
         raise ValueError(
@@ -1059,15 +1243,27 @@ def main():
             "Expected train + test-window alignment."
         )
 
-    train_metrics = compute_metrics(y_train_used_np, preds_total_np[:training_num_steps])
-    test_metrics = compute_metrics(y_test_np, preds_total_np[training_num_steps:])
+    train_metrics = compute_metrics(
+        y_train_target_np[:training_num_steps],
+        preds_total_np[:training_num_steps],
+    )
+    train_fit_metrics = train_metrics
+    val_metrics = (
+        compute_metrics(
+            y_train_target_np[training_num_steps:training_num_steps_full],
+            preds_total_np[training_num_steps:training_num_steps_full],
+        )
+        if use_val
+        else None
+    )
+    test_metrics = compute_metrics(y_test_np, preds_total_np[training_num_steps_full:])
     train_dates = train_dataset.dates
     test_dates = test_dataset.dates
     if train_dates is None or test_dates is None:
         raise ValueError("Prepared train/test CSVs must include a date column for artifact labeling.")
     train_dates = pd.to_datetime(train_dates)
     test_dates = pd.to_datetime(test_dates)
-    train_dates_used = train_dates.iloc[:training_num_steps].reset_index(drop=True)
+    train_dates_used = train_dates.iloc[:training_num_steps_full].reset_index(drop=True)
     test_dates = test_dates.reset_index(drop=True)
     metrics = {
         "asof": args.asof,
@@ -1094,6 +1290,11 @@ def main():
         "seed_mode": seed_mode,
         "private_norm": private_norm,
         "train_len": int(training_num_steps),
+        "train_window_len": int(training_num_steps_full),
+        "val_split": float(args.val_split),
+        "val_len": int(val_len),
+        "patience": int(args.patience),
+        "use_val": bool(use_val),
         "test_len": int(test_horizon),
         "private_start_idx": int(private_start_idx),
         "matched_window_with_opentable": bool(args.matched_window_with_opentable),
@@ -1108,6 +1309,7 @@ def main():
         "sensitivity_day_pp": private_meta.get("sensitivity_day_pp"),
         "sensitivity_l2_pp": private_meta.get("sensitivity_l2_pp"),
         "sigma_pp": private_meta.get("sigma_pp"),
+        "clip_norm": None if args.clip_norm is None else float(args.clip_norm),
         "long_train": bool(long_train_enabled),
         "window_start": split_info.get("window_start"),
         "window_end": split_info.get("window_end"),
@@ -1118,7 +1320,21 @@ def main():
         "actual_asof": split_info.get("actual_asof"),
         "requested_asof": split_info.get("requested_asof", args.asof),
         "train_metrics": train_metrics,
+        "train_fit_metrics": train_fit_metrics,
+        "val_metrics": val_metrics,
         "test_metrics": test_metrics,
+        "best_epoch_gradmeta": best_epoch_gradmeta,
+        "best_epoch_adapter": best_epoch_adapter,
+        "best_epoch_together": best_epoch_together,
+        "best_val_loss_gradmeta": None if not np.isfinite(best_val_loss_gradmeta) else float(best_val_loss_gradmeta),
+        "best_val_loss_adapter": None if not np.isfinite(best_val_loss_adapter) else float(best_val_loss_adapter),
+        "best_val_loss_together": None if not np.isfinite(best_val_loss_together) else float(best_val_loss_together),
+        "stopped_early_gradmeta": bool(stopped_early_gradmeta),
+        "stopped_early_adapter": bool(stopped_early_adapter),
+        "stopped_early_together": bool(stopped_early_together),
+        "epochs_completed_gradmeta": int(epochs_completed_gradmeta),
+        "epochs_completed_adapter": int(epochs_completed_adapter),
+        "epochs_completed_together": int(epochs_completed_together),
     }
 
     forecast_days = int(test_horizon)
@@ -1151,7 +1367,11 @@ def main():
                 ignore_index=True,
             ),
             "day_idx": np.arange(len(y_true_full), dtype=int),
-            "split": np.where(np.arange(len(y_true_full)) < training_num_steps, "train", "test"),
+            "split": np.where(
+                np.arange(len(y_true_full)) < training_num_steps,
+                "train",
+                np.where(np.arange(len(y_true_full)) < training_num_steps_full, "val", "test"),
+            ),
             "truth_cases": y_true_full,
             "pred_cases": preds_total_np,
             "smooth_cases_window": np.full(len(y_true_full), int(args.smooth_cases_window), dtype=int),
@@ -1178,7 +1398,7 @@ def main():
             out_path=out_dir / f"fit_train_test_{run_tag}.png",
             y_true_full=y_true_full,
             y_pred_full=preds_total_np,
-            split_idx=training_num_steps,
+            split_idx=training_num_steps_full,
             title=f"NYC GradMeta Fit: {run_tag}",
             subtitle=subtitle,
             truth_label=smoothing_desc,
@@ -1211,12 +1431,29 @@ def main():
             "sensitivity_day_pp": metrics["sensitivity_day_pp"],
             "sensitivity_l2_pp": metrics["sensitivity_l2_pp"],
             "sigma_pp": metrics["sigma_pp"],
+            "clip_norm": metrics["clip_norm"],
             "use_adapter": bool(args.use_adapter),
             "long_train": bool(long_train_enabled),
             "epochs_gradmeta": epochs_gradmeta,
             "epochs_adapter": epochs_adapter,
             "epochs_together": epochs_together,
             "seed": seed,
+            "val_split": float(args.val_split),
+            "val_len": int(val_len),
+            "patience": int(args.patience),
+            "use_val": bool(use_val),
+            "best_epoch_gradmeta": best_epoch_gradmeta,
+            "best_epoch_adapter": best_epoch_adapter,
+            "best_epoch_together": best_epoch_together,
+            "best_val_loss_gradmeta": None if not np.isfinite(best_val_loss_gradmeta) else float(best_val_loss_gradmeta),
+            "best_val_loss_adapter": None if not np.isfinite(best_val_loss_adapter) else float(best_val_loss_adapter),
+            "best_val_loss_together": None if not np.isfinite(best_val_loss_together) else float(best_val_loss_together),
+            "stopped_early_gradmeta": bool(stopped_early_gradmeta),
+            "stopped_early_adapter": bool(stopped_early_adapter),
+            "stopped_early_together": bool(stopped_early_together),
+            "epochs_completed_gradmeta": int(epochs_completed_gradmeta),
+            "epochs_completed_adapter": int(epochs_completed_adapter),
+            "epochs_completed_together": int(epochs_completed_together),
             "adapter_target": args.adapter_target,
             "target_name": target_name,
             "smooth_cases_window": int(args.smooth_cases_window),
@@ -1231,6 +1468,8 @@ def main():
             "train_mse": train_metrics["mse"],
             "train_rmse": train_metrics["rmse"],
             "train_mae": train_metrics["mae"],
+            "train_fit_rmse": train_fit_metrics["rmse"],
+            "val_rmse": None if val_metrics is None else val_metrics["rmse"],
             "test_mse": test_metrics["mse"],
             "test_rmse": test_metrics["rmse"],
             "test_mae": test_metrics["mae"],

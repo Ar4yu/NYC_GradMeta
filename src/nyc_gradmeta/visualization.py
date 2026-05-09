@@ -22,8 +22,9 @@ def load_forecast(
     smooth_cases_window: int,
     run_tag: str | None = None,
     root: Path = Path("."),
+    output_dir: Path | None = None,
 ) -> pd.DataFrame:
-    out_dir = root / "outputs" / "nyc" / asof
+    out_dir = output_dir if output_dir is not None else root / "outputs" / "nyc" / asof
     forecast_base = f"forecast_28d_w{int(smooth_cases_window)}"
     candidates = []
     if run_tag:
@@ -56,13 +57,19 @@ def plot_forecast_vs_truth(
     smooth_cases_window: int,
     title: str = "",
     subtitle: str = "",
+    output_dir: Path | None = None,
 ) -> None:
     test_df = pd.read_csv(test_csv)
     if "cases" not in test_df.columns:
         raise ValueError(f"{test_csv} must have column 'cases'.")
 
     y_true = test_df["cases"].to_numpy(dtype=float)
-    forecast_df = load_forecast(asof, smooth_cases_window=smooth_cases_window, run_tag=run_tag)
+    forecast_df = load_forecast(
+        asof,
+        smooth_cases_window=smooth_cases_window,
+        run_tag=run_tag,
+        output_dir=output_dir,
+    )
     y_pred = forecast_df["pred_cases"].to_numpy(dtype=float)
 
     if len(y_true) != len(y_pred):
@@ -94,8 +101,14 @@ def plot_forecast_vs_truth(
     plt.close(fig)
 
 
-def load_metrics_json(asof: str, run_tag: str, root: Path = Path(".")) -> dict | None:
-    path = root / "outputs" / "nyc" / asof / f"metrics_{run_tag}.json"
+def load_metrics_json(
+    asof: str,
+    run_tag: str,
+    root: Path = Path("."),
+    output_dir: Path | None = None,
+) -> dict | None:
+    out_dir = output_dir if output_dir is not None else root / "outputs" / "nyc" / asof
+    path = out_dir / f"metrics_{run_tag}.json"
     if not path.exists():
         return None
     with open(path, "r", encoding="utf-8") as f:
@@ -137,6 +150,11 @@ def main():
         help="Privacy mechanism for DP OpenTable run tags.",
     )
     ap.add_argument("--epsilon", type=float, default=None, help="Privacy epsilon for DP OpenTable run tags.")
+    ap.add_argument(
+        "--output_dir",
+        default=None,
+        help="Optional directory containing forecast/metrics artifacts and receiving the plot. Defaults to outputs/nyc/<ASOF>.",
+    )
     args = ap.parse_args()
 
     with open(args.config, "r") as f:
@@ -161,7 +179,8 @@ def main():
     )
     with open(split_info_path, "r", encoding="utf-8") as f:
         split_info = json.load(f)
-    metrics = load_metrics_json(args.asof, run_tag)
+    out_dir = Path(args.output_dir) if args.output_dir else Path("outputs") / "nyc" / args.asof
+    metrics = load_metrics_json(args.asof, run_tag, output_dir=out_dir)
     privacy_bits = []
     if metrics is not None and metrics.get("privacy_mode") not in (None, "", "none"):
         privacy_bits.append(f"{metrics.get('mechanism')} {metrics.get('privacy_mode')} DP")
@@ -169,13 +188,14 @@ def main():
         if metrics.get("sigma_pp") is not None:
             privacy_bits.append(f"sigma={float(metrics['sigma_pp']):.3f} pp")
 
-    out_path = Path("outputs") / "nyc" / args.asof / f"forecast_vs_truth_{run_tag}.png"
+    out_path = out_dir / f"forecast_vs_truth_{run_tag}.png"
     plot_forecast_vs_truth(
         asof=args.asof,
         test_csv=test_csv,
         run_tag=run_tag,
         out_path=out_path,
         smooth_cases_window=args.smooth_cases_window,
+        output_dir=out_dir,
         title=f"NYC Forecast vs Truth: {run_tag}",
         subtitle=(
             f"Window {split_info.get('window_start')} to {split_info.get('window_end')} | "

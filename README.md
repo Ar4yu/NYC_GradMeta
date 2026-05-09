@@ -60,6 +60,42 @@ If you want the one-command smoothing smoke test already in the repo, use:
 ./scripts/smoke_test_smoothing.sh 2022-10-15
 ```
 
+### Multi-seed matched DP sweep
+
+The matched-window DP sweep can now run as an isolated experiment group without overwriting the legacy `outputs/nyc/<ASOF>/` artifacts. Use `--seeds` plus an experiment tag:
+
+```bash
+caffeinate -dimsu bash -lc './scripts/run_matched_dp_grid_w7.sh --long-train --seeds 0,1,2,3,4 --experiment-tag dp_multiseed_$(date +%Y%m%d_%H%M%S)'
+```
+
+If `--experiment-tag` is omitted while `--seeds` is present, the runner creates a timestamped `dp_multiseed_<YYYYmmdd_HHMMSS>` tag. If `--experiment-tag` is present and `--seeds` is omitted, the seed list defaults to `0,1,2,3,4`.
+
+Per-seed artifacts are written under:
+
+```text
+outputs/nyc/<resolved-ASOF>/run_groups/<experiment-tag>/seed_<seed>/
+```
+
+Each seed directory preserves its own metrics JSONs, forecasts, fit CSVs, plots, and private DP tensors under `seed_<seed>/private/`. Cross-seed outputs are written under:
+
+```text
+outputs/nyc/<resolved-ASOF>/run_groups/<experiment-tag>/aggregate/
+```
+
+The aggregate directory includes `metrics_summary_dp_w7_per_seed.csv`, `metrics_summary_dp_w7_aggregate.csv`, `metrics_summary_dp_w7_baselines_aggregate.csv`, and `privacy_utility_aggregate_rmse_mae_w7_matched_ot.png`. The thesis-facing final visualization directories also receive tag-specific aggregate tables and plots:
+
+```text
+thesis_visualizations/<experiment-tag>_metrics_summary_dp_w7_aggregate.csv
+thesis_visualizations/fig6_privacy_utility_tradeoff_curves_<experiment-tag>_aggregate.pdf
+thesis_visualizations_png/fig6_privacy_utility_tradeoff_curves_<experiment-tag>_aggregate.png
+```
+
+The original single-seed command remains available and keeps its existing output behavior:
+
+```bash
+./scripts/run_matched_dp_grid_w7.sh 2022-10-15
+```
+
 ## 2) Data Sources + Licensing / Usage Notes
 
 This repository ships processed data under `data/processed/`, including:

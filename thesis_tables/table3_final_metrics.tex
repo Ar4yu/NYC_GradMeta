@@ -15,19 +15,24 @@ Public only & 3 & \textemdash & 4679.2614 & 3806.7816 & 1385.1325 \\
 Public + OpenTable & 3 & \textemdash & 2319.0306 & 1780.5191 & 655.8656 \\
 Public only & 7 & \textemdash & 126.7800 & 113.3240 & 32.7390 \\
 Public + OpenTable & 7 & \textemdash & 64.3322 & 49.6218 & 17.2793 \\
-\multicolumn{6}{l}{\textit{Event-level Gaussian DP (w=7)}} \\
-Event-DP OpenTable & 7 & 1 & 160.5608 & 143.5558 & 48.1469 \\
-Event-DP OpenTable & 7 & 2 & 147.3098 & 131.2542 & 44.0768 \\
-Event-DP OpenTable & 7 & 4 & 42.7285 & 38.5079 & 11.6525 \\
-Event-DP OpenTable & 7 & 8 & 85.7090 & 70.9823 & 20.1400 \\
-Event-DP OpenTable & 7 & 16 & 81.4912 & 65.1343 & 18.0780 \\
-\multicolumn{6}{l}{\textit{Restaurant-level Gaussian DP (w=7)}} \\
-Restaurant-DP OpenTable & 7 & 1 & 58.6548 & 55.0389 & 17.3236 \\
-Restaurant-DP OpenTable & 7 & 2 & 53.6869 & 47.0905 & 13.8156 \\
-Restaurant-DP OpenTable & 7 & 4 & 74.7909 & 57.5505 & 20.1873 \\
-Restaurant-DP OpenTable & 7 & 8 & 99.3487 & 83.9949 & 23.7570 \\
-Restaurant-DP OpenTable & 7 & 16 & 52.7896 & 49.2123 & 15.5717 \\
+\multicolumn{6}{l}{\textit{Event-level Gaussian DP (aggregate, $w=7$)}} \\
+Event-DP OpenTable (agg.) & 7 & 1 & 116.13 $\pm$ 29.31 & --- & --- \\
+Event-DP OpenTable (agg.) & 7 & 2 & 131.62 $\pm$ 36.00 & --- & --- \\
+Event-DP OpenTable (agg.) & 7 & 4 & 113.36 $\pm$ 56.64 & --- & --- \\
+Event-DP OpenTable (agg.) & 7 & 8 & 80.35 $\pm$ 28.57 & --- & --- \\
+Event-DP OpenTable (agg.) & 7 & 16 & 98.51 $\pm$ 28.02 & --- & --- \\
+\multicolumn{6}{l}{\textit{Restaurant-level Gaussian DP (aggregate, $w=7$)}} \\
+Restaurant-DP OpenTable (agg.) & 7 & 1 & 71.25 $\pm$ 53.11 & --- & --- \\
+Restaurant-DP OpenTable (agg.) & 7 & 2 & 115.83 $\pm$ 56.37 & --- & --- \\
+Restaurant-DP OpenTable (agg.) & 7 & 4 & 74.18 $\pm$ 25.30 & --- & --- \\
+Restaurant-DP OpenTable (agg.) & 7 & 8 & 71.08 $\pm$ 22.43 & --- & --- \\
+Restaurant-DP OpenTable (agg.) & 7 & 16 & 77.97 $\pm$ 45.64 & --- & --- \\
 \bottomrule
 \end{tabularx}
+\begin{tablenotes}[flushleft]
+\footnotesize
+\item Non-private rows report matched-window point estimates.
+\item DP rows report aggregate RMSE mean $\pm$ standard deviation across seeds from the final thesis-facing Gaussian DP sweep at $w=7$; MAE and MAPE are intentionally omitted for these aggregate rows.
+\end{tablenotes}
 \end{threeparttable}
 \end{table}

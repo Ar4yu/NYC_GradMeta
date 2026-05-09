@@ -22,3 +22,4 @@ results/
 .venv/
 venv/
 *.egg-info/
+outputs/nyc/*/run_groups/

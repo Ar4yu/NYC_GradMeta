@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TABLE_DIR = ROOT / "thesis_tables"
 ASOF = "2020-08-05"
 OUTPUT_DIR = ROOT / "outputs" / "nyc" / ASOF
+FINAL_DP_AGGREGATE_CSV = ROOT / "thesis_visualizations" / "dp_multiseed_20260417_223607_metrics_summary_dp_w7_aggregate.csv"
 
 NONPRIVATE_RUNS = [
     "public_only_adapter_w0_matched_ot",
@@ -58,6 +59,10 @@ def read_json(path: Path) -> dict:
 
 def metric_str(value) -> str:
     return f"{float(value):.4f}"
+
+
+def aggregate_rmse_str(mean_value, std_value) -> str:
+    return rf"{float(mean_value):.2f} $\pm$ {float(std_value):.2f}"
 
 
 def read_csv_shape(path: Path) -> tuple[int, int]:
@@ -244,11 +249,6 @@ def table2() -> tuple[str, list[str], list[str]]:
 
 def grouped_metric_rows() -> list[list[str]]:
     rows: list[list[str]] = []
-    groups = [
-        ("Non-private matched runs", NONPRIVATE_RUNS),
-        ("Event-level Gaussian DP (w=7)", EVENT_RUNS),
-        ("Restaurant-level Gaussian DP (w=7)", RESTAURANT_RUNS),
-    ]
     label_map = {
         "public_only_adapter_w0_matched_ot": "Public only",
         "public_opentable_adapter_w0_matched_ot": "Public + OpenTable",
@@ -257,19 +257,40 @@ def grouped_metric_rows() -> list[list[str]]:
         "public_only_adapter_w7_matched_ot": "Public only",
         "public_opentable_adapter_w7_matched_ot": "Public + OpenTable",
     }
-    for group_name, run_names in groups:
+    rows.append([r"\multicolumn{6}{l}{\textit{Non-private matched runs}}"])
+    for run_name in NONPRIVATE_RUNS:
+        metrics = read_json(OUTPUT_DIR / f"metrics_{run_name}.json")
+        test = metrics["test_metrics"]
+        rows.append(
+            [
+                latex_escape(label_map[run_name]),
+                latex_escape(str(metrics["smooth_cases_window"])),
+                r"\textemdash",
+                metric_str(test["rmse"]),
+                metric_str(test["mae"]),
+                metric_str(test["mape"]),
+            ]
+        )
+
+    # The thesis-facing DP block intentionally uses the final multiseed aggregate
+    # summary rather than the older single-seed run-level metrics.
+    aggregate = pd.read_csv(FINAL_DP_AGGREGATE_CSV)
+    dp_groups = [
+        ("event", "Event-level Gaussian DP (aggregate, w=7)", "Event-DP OpenTable (agg.)"),
+        ("restaurant", "Restaurant-level Gaussian DP (aggregate, w=7)", "Restaurant-DP OpenTable (agg.)"),
+    ]
+    for privacy_mode, group_name, label in dp_groups:
+        sub = aggregate[aggregate["privacy_mode"] == privacy_mode].sort_values("epsilon")
         rows.append([rf"\multicolumn{{6}}{{l}}{{\textit{{{group_name}}}}}"])
-        for run_name in run_names:
-            metrics = read_json(OUTPUT_DIR / f"metrics_{run_name}.json")
-            test = metrics["test_metrics"]
+        for _, row in sub.iterrows():
             rows.append(
                 [
-                    latex_escape(label_map.get(run_name, "Event-DP OpenTable" if "event" in run_name else "Restaurant-DP OpenTable")),
-                    latex_escape(str(metrics["smooth_cases_window"])),
-                    (latex_escape(str(int(metrics["epsilon"]))) if metrics.get("epsilon") is not None else r"\textemdash"),
-                    metric_str(test["rmse"]),
-                    metric_str(test["mae"]),
-                    metric_str(test["mape"]),
+                    latex_escape(label),
+                    "7",
+                    latex_escape(str(int(float(row["epsilon"])))),
+                    aggregate_rmse_str(row["RMSE_mean"], row["RMSE_std"]),
+                    "---",
+                    "---",
                 ]
             )
     return rows
@@ -282,9 +303,13 @@ def table3() -> tuple[str, list[str], list[str]]:
         colspec=r">{\raggedright\arraybackslash}X>{\centering\arraybackslash}p{0.06\textwidth}>{\centering\arraybackslash}p{0.08\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}>{\raggedleft\arraybackslash}p{0.15\textwidth}",
         header=["Condition / run family", "$w$", r"$\epsilon$", "RMSE", "MAE", "MAPE"],
         rows=grouped_metric_rows(),
+        notes=[
+            "Non-private rows report matched-window point estimates.",
+            r"DP rows report aggregate RMSE mean $\pm$ standard deviation across seeds from the final thesis-facing Gaussian DP sweep at $w=7$; MAE and MAPE are intentionally omitted for these aggregate rows.",
+        ],
         size_cmd=r"\footnotesize",
     )
-    return tex, [f"outputs/nyc/2020-08-05/metrics_{run}.json" for run in ALL_RUNS] + ["outputs/nyc/2020-08-05/metrics_summary.csv"], []
+    return tex, [f"outputs/nyc/2020-08-05/metrics_{run}.json" for run in NONPRIVATE_RUNS] + [str(FINAL_DP_AGGREGATE_CSV.relative_to(ROOT))], []
 
 
 def table4() -> tuple[str, list[str], list[str]]:
